@@ -17,8 +17,8 @@ import json
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # Supabase 연결 설정
-url: str = "https://ybwidzlcixovacxmdeqi.supabase.co"
-key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlid2lkemxjaXhvdmFjeG1kZXFpIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0MjMwNTIxNywiZXhwIjoyMDU3ODgxMjE3fQ.29vDqqL-1M43jkFP8P-AWT626CerBVpDshUclJK39eo"
+url: str = ""
+key: str = ""
 supabase: Client = create_client(url, key)
 
 # Supabase에서 데이터 가져오기
@@ -29,17 +29,17 @@ supabase: Client = create_client(url, key)
 #         print(response.data)
 #         # 응답 데이터를 DataFrame으로 변환
 #         df = pd.DataFrame(response.data)
-        
+
 #         # 날짜 열을 datetime으로 변환
 #         df['날짜'] = pd.to_datetime(df['날짜'])
 #         df.sort_values(by='날짜', inplace=True)
-        
+
 #         print("Handling missing values and filtering invalid data...")
 #         df.fillna(method='ffill', inplace=True)
 #         df.fillna(method='bfill', inplace=True)
 #         df = df.apply(pd.to_numeric, errors='coerce')
 #         df.dropna(inplace=True)
-        
+
 #         return df
 #     except Exception as e:
 #         print(f"데이터 가져오기 오류: {e}")
@@ -91,7 +91,7 @@ def get_all_data(table_name):
             break
         all_data.extend(data)
         offset += limit
-    return all_data        
+    return all_data
 
 # Transformer Encoder 정의
 def transformer_encoder(inputs, num_heads, ff_dim, dropout=0.1):
@@ -146,19 +146,19 @@ if data is None or data.empty:
 forecast_horizon = 14  # 예측 기간 (14일 후를 예측)
 
 target_columns = [
-    '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타', 
-    '테슬라', '엔비디아', '코스트코', '넷플릭스', '페이팔', '인텔', '시스코', '컴캐스트', 
-    '펩시코', '암젠', '허니웰 인터내셔널', '스타벅스', '몬델리즈', '마이크론', '브로드컴', 
+    '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
+    '테슬라', '엔비디아', '코스트코', '넷플릭스', '페이팔', '인텔', '시스코', '컴캐스트',
+    '펩시코', '암젠', '허니웰 인터내셔널', '스타벅스', '몬델리즈', '마이크론', '브로드컴',
     '어도비', '텍사스 인스트루먼트', 'AMD', '어플라이드 머티리얼즈', 'S&P 500 ETF', 'QQQ ETF'
 ]
 
 economic_features = [
-    '10년 기대 인플레이션율', '장단기 금리차', '기준금리', '미시간대 소비자 심리지수', 
-    '실업률', '2년 만기 미국 국채 수익률', '10년 만기 미국 국채 수익률', '금융스트레스지수', 
-    '개인 소비 지출', '소비자 물가지수', '5년 변동금리 모기지', '미국 달러 환율', 
-    '통화 공급량 M2', '가계 부채 비율', 'GDP 성장률', '나스닥 종합지수', 'S&P 500 지수', '금 가격', '달러 인덱스', '나스닥 100', 
-    'S&P 500 ETF', 'QQQ ETF', '러셀 2000 ETF', '다우 존스 ETF', 'VIX 지수', 
-    '닛케이 225', '상해종합', '항셍', '영국 FTSE', '독일 DAX', '프랑스 CAC 40', 
+    '10년 기대 인플레이션율', '장단기 금리차', '기준금리', '미시간대 소비자 심리지수',
+    '실업률', '2년 만기 미국 국채 수익률', '10년 만기 미국 국채 수익률', '금융스트레스지수',
+    '개인 소비 지출', '소비자 물가지수', '5년 변동금리 모기지', '미국 달러 환율',
+    '통화 공급량 M2', '가계 부채 비율', 'GDP 성장률', '나스닥 종합지수', 'S&P 500 지수', '금 가격', '달러 인덱스', '나스닥 100',
+    'S&P 500 ETF', 'QQQ ETF', '러셀 2000 ETF', '다우 존스 ETF', 'VIX 지수',
+    '닛케이 225', '상해종합', '항셍', '영국 FTSE', '독일 DAX', '프랑스 CAC 40',
     '미국 전체 채권시장 ETF', 'TIPS ETF', '투자등급 회사채 ETF', '달러/엔', '달러/위안',
     '미국 리츠 ETF'
 ]
@@ -249,16 +249,16 @@ def save_predictions_to_db(result_df):
     try:
         # 기존 테이블이 없으면 생성 (predicted_stocks 테이블에 저장)
         records = result_df.to_dict('records')
-        
+
         # 테이블에 먼저 데이터 삭제 후 새로 삽입
         supabase.table("predicted_stocks").delete().neq("id", 0).execute()
-        
+
         # 일괄 삽입 (큰 데이터라면 청크로 나누어 삽입)
         chunk_size = 100
         for i in range(0, len(records), chunk_size):
             chunk = records[i:i+chunk_size]
             response = supabase.table("predicted_stocks").insert(chunk).execute()
-        
+
         print(f"{len(records)}개의 예측 결과가 데이터베이스에 저장되었습니다.")
     except Exception as e:
         print(f"데이터베이스 저장 오류: {e}")
@@ -290,9 +290,9 @@ for col in target_columns:
 
 print(f"모든 예측 결과가 DB에 저장되었습니다.")
 
-#################################### 결과 추론 #################################### 
-#################################### 결과 추론 #################################### 
-#################################### 결과 추론 #################################### 
+#################################### 결과 추론 ####################################
+#################################### 결과 추론 ####################################
+#################################### 결과 추론 ####################################
 
 ######################
 # (0) Get Predictions From DB Function
@@ -340,16 +340,16 @@ def save_analysis_to_db(result_df):
     try:
         # stock_analysis_results 테이블에 저장
         records = result_df.to_dict('records')
-        
+
         # 테이블에 먼저 데이터 삭제 후 새로 삽입
         supabase.table("stock_analysis_results").delete().neq("id", 0).execute()
-        
+
         # 일괄 삽입 (큰 데이터라면 청크로 나누어 삽입)
         chunk_size = 100
         for i in range(0, len(records), chunk_size):
             chunk = records[i:i+chunk_size]
             response = supabase.table("stock_analysis_results").insert(chunk).execute()
-        
+
         print(f"{len(records)}개의 분석 결과가 데이터베이스에 저장되었습니다.")
     except Exception as e:
         print(f"데이터베이스 저장 오류: {e}")
@@ -435,7 +435,7 @@ def analyze_rise_predictions(data, target_columns):
         # 원래 컬럼명 그대로 사용
         actual_col = f'{col}_Actual'
         predicted_col = f'{col}_Predicted'
-        
+
         last_actual_price = last_row.get(actual_col, np.nan)
         predicted_future_price = last_row.get(predicted_col, np.nan)
 
@@ -510,9 +510,9 @@ if data is None or len(data) == 0:
 
 # 2) Target columns
 target_columns = [
-    '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타', 
-    '테슬라', '엔비디아', '코스트코', '넷플릭스', '페이팔', '인텔', '시스코', '컴캐스트', 
-    '펩시코', '암젠', '허니웰 인터내셔널', '스타벅스', '몬델리즈', '마이크론', '브로드컴', 
+    '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
+    '테슬라', '엔비디아', '코스트코', '넷플릭스', '페이팔', '인텔', '시스코', '컴캐스트',
+    '펩시코', '암젠', '허니웰 인터내셔널', '스타벅스', '몬델리즈', '마이크론', '브로드컴',
     '어도비', '텍사스 인스트루먼트', 'AMD', '어플라이드 머티리얼즈', 'S&P 500 ETF', 'QQQ ETF'
 ]
 
