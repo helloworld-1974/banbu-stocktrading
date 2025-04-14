@@ -344,7 +344,7 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
     
         # 결측치 및 비정상적인 값 처리
         result_df.replace('.', pd.NA, inplace=True)
-        result_df = result_df.dropna(subset=['10년 기대 인플레이션율', '장단기 금리차'], how='any')
+        # result_df = result_df.dropna(subset=['10년 기대 인플레이션율', '장단기 금리차'], how='any')
         
         # 결측치를 이전 값으로 채움
         result_df.sort_index(inplace=True)

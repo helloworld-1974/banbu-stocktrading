@@ -12,6 +12,7 @@ from app.services.balance_service import (
     get_overseas_order_detail,
     get_overseas_order_resv_list,
     order_overseas_stock,
+    create_conditional_orders,
 )
 
 router = APIRouter()
@@ -352,7 +353,7 @@ def conditional_order_route(request: ConditionalOrderRequest):
     ### 입력값 설명
     - **pdno**: 종목 코드 (예: AAPL)
     - **ovrs_excg_cd**: 거래소 코드 (예: NASD)
-    - **base_price**: 기준 가격
+    - **base_price**: 기준 가격 (지정하지 않으면 보유 주식의 매수 가격으로 설정됨)
     - **stop_loss_percent**: 손절매 퍼센트 (예: -5.0)
     - **take_profit_percent**: 이익실현 퍼센트 (예: 5.0)
     - **quantity**: 주문 수량
@@ -361,4 +362,28 @@ def conditional_order_route(request: ConditionalOrderRequest):
     - base_price가 100달러이고 stop_loss_percent가 -5.0이면, 주가가 95달러에 도달했을 때 매도 주문 실행
     - base_price가 100달러이고 take_profit_percent가 5.0이면, 주가가 105달러에 도달했을 때 매도 주문 실행
     """
-    # 구현 로직
+    try:
+        # 요청 데이터 준비
+        params = {
+            "pdno": request.pdno,
+            "ovrs_excg_cd": request.ovrs_excg_cd,
+            "base_price": request.base_price if request.base_price else None,
+            "stop_loss_percent": request.stop_loss_percent if request.stop_loss_percent is not None else -5.0,
+            "take_profit_percent": request.take_profit_percent if request.take_profit_percent is not None else 5.0,
+            "quantity": request.quantity
+        }
+        
+        # 조건부 주문 실행
+        result = create_conditional_orders(params)
+        
+        # 결과 확인
+        if result.get("rt_cd") != "0":
+            error_msg = result.get("msg1", "조건부 주문 설정 중 오류가 발생했습니다")
+            raise HTTPException(status_code=400, detail=error_msg)
+            
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"조건부 주문 처리 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"조건부 주문 처리 중 오류가 발생했습니다: {str(e)}")

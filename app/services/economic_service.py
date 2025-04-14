@@ -76,10 +76,32 @@ economic_columns = [
 
 async def update_economic_data_in_background():
     """
-    경제 및 주식 데이터를 Supabase에 저장하는 백그라운드 작업입니다.
-    데이터 업데이트 후, 기술적 지표 생성과 뉴스 감정 분석도 자동으로 수행합니다.
+    백그라운드에서 경제 지표 데이터를 업데이트
     """
     try:
+        print("경제 지표 및 주가 데이터 업데이트 작업 시작...")
+        
+        # 미국 장 마감 여부 확인 (서머타임 여부와 관계없이 22:30~06:00는 미국 장 시간으로 처리)
+        now = datetime.now()
+        korea_time = now.strftime('%H:%M')
+        current_hour = int(korea_time.split(':')[0])
+        current_min = int(korea_time.split(':')[1])
+        
+        # 미국 장 시간인지 확인 (22:30~06:00)
+        is_market_hours = False
+        
+        # 22:30 이후
+        if current_hour >= 22 and (current_hour > 22 or current_min >= 30):
+            is_market_hours = True
+        # 다음 날 06:00 이전
+        elif current_hour < 6:
+            is_market_hours = True
+            
+        # 미국 주식 시장이 열려 있는 경우, 데이터 수집 연기
+        if is_market_hours:
+            print(f"현재 시간 {korea_time}은 미국 주식 시장 운영 시간입니다. 장 마감 후에 데이터를 수집합니다.")
+            return
+
         # 마지막 수집 날짜 조회
         start_date = get_last_updated_date()
         
