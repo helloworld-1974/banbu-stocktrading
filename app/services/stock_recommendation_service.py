@@ -440,10 +440,10 @@ class StockRecommendationService:
                 tech_conditions = [item["golden_cross"], item["rsi"] < 50, item["macd_buy_signal"]]
                 
                 if sentiment_score is not None and sentiment_score >= 0.15:
-                    if any(tech_conditions):
+                    if sum(tech_conditions) >= 2:
                         final_results.append(item)
                 else:
-                    if sum(tech_conditions) >= 2:
+                    if sum(tech_conditions) >= 3:
                         final_results.append(item)
 
             # 7. 종합 점수 계산 및 정렬
@@ -479,7 +479,7 @@ class StockRecommendationService:
         매도 대상 종목을 식별하는 함수
         
         매도 조건:
-        1. 구매가 대비 현재가가 +5% 이상(익절) 또는 -5% 이하(손절)인 종목
+        1. 구매가 대비 현재가가 +5% 이상(익절) 또는 -7% 이하(손절)인 종목
         2. 감성 점수 < -0.15이고 기술적 지표 중 2개 이상 매도 신호인 종목
         3. 기술적 지표 중 3개 이상 매도 신호인 종목
         
@@ -556,7 +556,7 @@ class StockRecommendationService:
                 # 조건 1: 가격 기반 매도 (익절/손절)
                 if price_change_percent >= 5:
                     sell_reasons.append(f"익절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 상승")
-                elif price_change_percent <= -5:
+                elif price_change_percent <= -7:
                     sell_reasons.append(f"손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락")
                 
                 # 기술적 지표 확인

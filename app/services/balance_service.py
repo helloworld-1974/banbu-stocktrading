@@ -179,8 +179,13 @@ def get_domestic_balance():
             else:
                 raise
 
-def get_overseas_balance():
-    """해외주식 잔고 조회"""
+def get_overseas_balance(ovrs_excg_cd="NASD"):
+    """해외주식 잔고 조회
+    
+    Args:
+        ovrs_excg_cd (str, optional): 거래소 코드. Defaults to "NASD".
+            NASD: 나스닥, NYSE: 뉴욕, AMEX: 아멕스
+    """
     # 토큰 가져오기
     access_token = get_access_token()
     
@@ -197,7 +202,7 @@ def get_overseas_balance():
     params = {
         "CANO": settings.KIS_CANO,
         "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
-        "OVRS_EXCG_CD": "NASD",  # NASD: 나스닥, NYSE: 뉴욕, AMEX: 아멕스
+        "OVRS_EXCG_CD": ovrs_excg_cd,  # 매개변수로 받은 거래소 코드 사용
         "TR_CRCY_CD": "USD",     # 통화코드 USD
         "CTX_AREA_FK200": "",
         "CTX_AREA_NK200": ""
@@ -226,6 +231,47 @@ def get_overseas_balance():
                 time.sleep(1)  # 재시도 전 1초 대기
             else:
                 raise
+
+def get_all_overseas_balances():
+    """모든 거래소의 해외주식 잔고 조회"""
+    # 주요 거래소 목록
+    exchanges = ["NASD", "NYSE", "AMEX"]
+    all_holdings = []
+    
+    for exchange in exchanges:
+        try:
+            result = get_overseas_balance(exchange)
+            
+            if result.get("rt_cd") == "0" and "output1" in result:
+                holdings = result.get("output1", [])
+                if holdings:
+                    all_holdings.extend(holdings)
+            else:
+                print(f"{exchange} 거래소 잔고 조회 실패: {result.get('msg1', '알 수 없는 오류')}")
+                
+            # API 요청 간 지연
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"{exchange} 거래소 잔고 조회 중 오류: {str(e)}")
+    
+    # 통합된 잔고 정보 반환
+    if all_holdings:
+        return {
+            "rt_cd": "0",
+            "msg_cd": "00000",
+            "msg1": "모든 거래소 잔고 조회 완료",
+            "output1": all_holdings,
+            "output2": {}  # 합산 정보는 필요시 계산
+        }
+    else:
+        return {
+            "rt_cd": "0",
+            "msg_cd": "00000",
+            "msg1": "보유 종목이 없습니다.",
+            "output1": [],
+            "output2": {}
+        }
 
 # 추가: 해외주식 예약주문 접수
 def overseas_order_resv(order_data):

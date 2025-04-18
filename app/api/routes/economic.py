@@ -1,6 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from app.schemas.stock import UpdateResponse
-from app.services.economic_service import update_economic_data_in_background
+from app.utils.scheduler import run_economic_data_update_now
 from datetime import date, datetime
 
 router = APIRouter()
@@ -17,8 +17,8 @@ async def update_economic_data(
     기존 데이터의 NULL 값은 새 데이터로 자동 업데이트됩니다.
     """
     try:
-        # 백그라운드 작업으로 데이터 업데이트 실행
-        background_tasks.add_task(update_economic_data_in_background)
+        # 백그라운드 작업으로 경제 데이터 업데이트 실행
+        background_tasks.add_task(run_economic_data_update_now)
         
         return {
             "success": True,
