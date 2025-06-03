@@ -129,81 +129,76 @@ nasdaq_top_100 = [
 # 결과 데이터프레임을 전역 변수로 정의 (초기에는 None)
 result_df = None
 
-def download_in_chunks(ticker, start_date, end_date, chunk_days=1):
+# yfinance.py에서 가져온 함수
+def download_yahoo_chart(symbol, start_date, end_date, interval="1d"):
     """
-    지정된 기간을 작은 청크로 나누어 데이터를 다운로드하는 함수
-    청크 간 중복이 발생하지 않도록 날짜 범위를 정확히 관리합니다.
+    Yahoo Finance Chart API를 통해 주어진 symbol의 종가(Close) 시계열을 가져옵니다.
+    - symbol: Yahoo Finance 티커 문자열 (예: "^GSPC", "AAPL")
+    - start_date: 시작일 (YYYY-MM-DD)
+    - end_date: 종료일 (YYYY-MM-DD)
+    - interval: "1d", "1wk", "1mo"
+    """
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    })
     
-    Args:
-        ticker (str): 주식 티커 심볼
-        start_date (str): 데이터 수집 시작 날짜 (YYYY-MM-DD 형식)
-        end_date (str): 데이터 수집 종료 날짜 (YYYY-MM-DD 형식)
-        chunk_days (int): 각 청크의 일수 (기본값: 1일)
-        
-    Returns:
-        pd.DataFrame: 다운로드된 데이터를 결합한 DataFrame
-    """
-    # 날짜 문자열을 datetime 객체로 변환
+    # 날짜 범위로 변환
     start_dt = datetime.strptime(start_date, '%Y-%m-%d')
     end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+    delta = end_dt - start_dt
     
-    all_data = []
-    current_start = start_dt
+    # 범위 문자열 결정 (차이가 1달 이하이면 1mo, 3달 이하이면 3mo, 6달 이하이면 6mo, 그 이상이면 max)
+    if delta.days <= 30:
+        range_str = "1mo"
+    elif delta.days <= 90:
+        range_str = "3mo"
+    elif delta.days <= 180:
+        range_str = "6mo"
+    elif delta.days <= 365:
+        range_str = "1y"
+    elif delta.days <= 730:
+        range_str = "2y"
+    elif delta.days <= 1825:
+        range_str = "5y"
+    else:
+        range_str = "max"
     
-    # 애플 종목 특별 로깅 준비
-    is_apple = ticker == "AAPL"
-    if is_apple:
-        print(f"\n애플 종목 수집 시작 - 청크 크기: {chunk_days}일")
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    params = {
+        "range": range_str,
+        "interval": interval,
+        "includePrePost": "false",
+        "events": "div|split"
+    }
     
-    while current_start <= end_dt:
-        # 현재 청크의 종료일 계산 (최소 다음날까지 포함하도록 설정)
-        current_end = min(current_start + timedelta(days=chunk_days), end_dt + timedelta(days=1))
-        
-        # 날짜를 문자열로 변환
-        current_start_str = current_start.strftime('%Y-%m-%d')
-        current_end_str = current_end.strftime('%Y-%m-%d')
-        
-        try:
-            # progress=False로 진행률 표시 숨김
-            chunk_df = yf.download(ticker, start=current_start_str, end=current_end_str, auto_adjust=True, progress=False)
-            
-            if not chunk_df.empty:
-                # 애플 종목인 경우만 청크별 범위 출력
-                if is_apple:
-                    dates = [d.date() for d in chunk_df.index]
-                    print(f"  애플 청크 데이터: {current_start_str} ~ {current_end_str}, 수집된 날짜: {dates}")
-                
-                # 데이터가 있는 경우에만 추가
-                all_data.append(chunk_df)
-            elif is_apple:
-                print(f"No data available for {ticker} from {current_start_str} to {current_end_str}")
-        except Exception as e:
-            if is_apple:
-                print(f"Error downloading {ticker} from {current_start_str} to {current_end_str}: {e}")
-        
-        # 다음 청크의 시작일 설정 (현재 청크의 마지막 날짜 다음 날)
-        current_start = current_start + timedelta(days=chunk_days)
+    r = sess.get(url, params=params)
+    r.raise_for_status()
+    result = r.json().get("chart", {}).get("result", [None])[0]
+    if not result:
+        raise ValueError(f"No data for symbol: {symbol}")
     
-    # 모든 청크 데이터 결합
-    if all_data:
-        # 빈 청크는 이미 제외했으므로 그대로 결합
-        combined_df = pd.concat(all_data)
-        
-        # 중복 인덱스 확인 및 제거
-        if combined_df.index.duplicated().any():
-            combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
-            
-        # 인덱스 정렬
-        combined_df = combined_df.sort_index()
-        
-        # 애플 종목인 경우 수집된 전체 날짜 출력
-        if is_apple:
-            print(f"\n애플 종목 수집 완료 - 총 {len(combined_df)}일")
-            dates = [d.date() for d in combined_df.index]
-            print(f"수집된 모든 날짜: {dates}")
-            
-        return combined_df
-    return pd.DataFrame()  # 빈 데이터프레임 반환
+    timestamps = result["timestamp"]
+    closes = result["indicators"]["quote"][0]["close"]
+    
+    # 시작 - 수정된 부분: 날짜만 사용하도록 처리
+    # 각 타임스탬프를 datetime으로 변환하고 날짜 부분만 사용
+    date_only = [pd.Timestamp.fromtimestamp(ts).date() for ts in timestamps]
+    
+    # 데이터프레임 생성 시 날짜만 포함하도록 수정
+    df = pd.DataFrame({
+        "Close": closes
+    }, index=pd.DatetimeIndex(date_only))
+    
+    # 중복된 날짜가 있는 경우 마지막 값만 유지
+    if df.index.duplicated().any():
+        df = df[~df.index.duplicated(keep='last')]
+    # 종료 - 수정된 부분
+    
+    # 시작일과 종료일 사이의 데이터만 필터링
+    df = df[(df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))]
+    
+    return df
 
 def collect_economic_data(start_date='2006-01-01', end_date=None):
     """
@@ -284,42 +279,43 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
         except Exception as e:
             print(f"Error processing DataFrame {i}: {e}")
     
-    # yfinance를 통한 데이터 수집
+    # yfinance를 통한 데이터 수집 (yfinance.py의 방식으로 대체)
     print("\nYahoo Finance 지표 데이터 수집 중...")
     yfinance_data_frames = []
     for name, ticker in yfinance_indicators.items():
-        # 1일 단위로 데이터 다운로드
-        df = download_in_chunks(ticker, start_date, end_date, chunk_days=1)
-        if not df.empty:
-            df = df[['Close']]
-            df.columns = [name]
-            df.index = df.index.tz_localize(None)
-            yfinance_data_frames.append(df)
-        else:
-            print(f"No data found for indicator {name} ({ticker}).")
+        try:
+            # download_yahoo_chart 함수를 사용하여 데이터 수집
+            df = download_yahoo_chart(ticker, start_date, end_date)
+            if not df.empty:
+                df.columns = [name]  # 'Close' 컬럼명을 지표 이름으로 변경
+                df.index = df.index.tz_localize(None)  # 시간대 정보 제거
+                yfinance_data_frames.append(df)
+                print(f"{name}({ticker}) 수집 완료, {len(df)}개")
+            else:
+                print(f"No data found for indicator {name} ({ticker}).")
+        except Exception as e:
+            print(f"Error downloading data for {ticker} ({name}): {e}")
+        # 요청 간 간격을 두어 rate limit 방지
+        time.sleep(1)
     
-    # 나스닥 100 상위 종목 데이터 수집
+    # 나스닥 100 상위 종목 데이터 수집 (yfinance.py의 방식으로 대체)
     print("\n나스닥 100 상위 종목 데이터 수집 중...")
     nasdaq_data_frames = []
     for ticker, name in nasdaq_top_100:
         try:
-            # 1일 단위로 데이터 다운로드
-            df = download_in_chunks(ticker, start_date, end_date, chunk_days=1)
+            # download_yahoo_chart 함수를 사용하여 데이터 수집
+            df = download_yahoo_chart(ticker, start_date, end_date)
             if not df.empty:
-                # 애플 종목인 경우 원본 데이터의 모든 날짜와 종가 출력
-                if ticker == "AAPL":
-                    print("\n===== 애플 종목 원본 데이터 =====")
-                    for idx, row in df.iterrows():
-                        print(f"{idx.date()}: 종가 = {row['Close']}")
-                
-                df = df[['Close']]
-                df.columns = [name]
-                df.index = df.index.tz_localize(None)
+                df.columns = [name]  # 'Close' 컬럼명을 종목 한글 이름으로 변경
+                df.index = df.index.tz_localize(None)  # 시간대 정보 제거
                 nasdaq_data_frames.append(df)
+                print(f"{name}({ticker}) 수집 완료, {len(df)}개")
             else:
                 print(f"No data found for stock {name} ({ticker}).")
         except Exception as e:
             print(f"Error downloading data for {ticker} ({name}): {e}")
+        # 요청 간 간격을 두어 rate limit 방지
+        time.sleep(1)
     
     # 모든 데이터를 날짜 기준으로 외부 결합하여 하나의 데이터프레임으로 결합
     all_data_frames = fred_data_frames + yfinance_data_frames + nasdaq_data_frames
@@ -333,22 +329,32 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
         print("데이터프레임 병합 중...")
         result_df = pd.concat(all_data_frames, axis=1, join='outer')
     
-        # 애플 종목 데이터 확인
-        if '애플' in result_df.columns:
-            print("\n===== 병합 후 애플 종목 데이터 =====")
-            print(f"병합 후 전체 행 수: {len(result_df)}")
-            apple_data = result_df[['애플']].dropna()
-            print(f"애플 데이터가 있는 행 수: {len(apple_data)}")
-            for idx, row in apple_data.iterrows():
-                print(f"{idx.date()}: 종가 = {row['애플']}")
-    
         # 결측치 및 비정상적인 값 처리
         result_df.replace('.', pd.NA, inplace=True)
-        # result_df = result_df.dropna(subset=['10년 기대 인플레이션율', '장단기 금리차'], how='any')
         
         # 결측치를 이전 값으로 채움
         result_df.sort_index(inplace=True)
         result_df.ffill(inplace=True)
+        
+        # 주요 수정: 날짜 인덱스의 시간 부분을 제거하고 일자만 남김
+        # 동일 날짜의 데이터가 여러 개 있는 경우, 마지막 데이터만 사용
+        print("날짜 인덱스 표준화 중...")
+        result_df.index = pd.to_datetime(result_df.index.date)  # 날짜만 남김
+        result_df = result_df[~result_df.index.duplicated(keep='last')]  # 중복 날짜 제거, 마지막 값 유지
+        
+        # 결과 데이터프레임 로그 출력
+        print("\n=== 결과 데이터프레임 정보 ===")
+        print(f"행 수: {len(result_df)}")
+        print(f"열 수: {len(result_df.columns)}")
+        print("컬럼 목록:")
+        for col in result_df.columns:
+            print(f"  - {col}")
+        
+        print("\n=== 결과 데이터프레임 처음 5행 ===")
+        print(result_df.head())
+        
+        print("\n=== 결과 데이터프레임 마지막 5행 ===")
+        print(result_df.tail())
         
         print(f"\n데이터 수집 완료")
         return result_df
