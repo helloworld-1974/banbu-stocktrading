@@ -6,7 +6,7 @@ import numpy as np
 import time
 
 # FRED API Key 설정
-api_key = '여러분의api_key입력해주세요.'
+api_key = 'aedfbcd8ba091c740281c0bd8ca93b46'
 
 # FRED에서 제공하는 지표 코드와 명칭
 fred_indicators = {

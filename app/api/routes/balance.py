@@ -17,7 +17,7 @@ from app.services.balance_service import (
 
 router = APIRouter()
 
-@router.get("/", summary="해외주식 잔고 조회")
+@router.get("/", summary="국내주식 잔고 조회")
 def read_balance():
     try:
         result = get_domestic_balance()
