@@ -163,19 +163,22 @@ def get_domestic_balance():
             
             # API 응답에 오류가 있고, 재시도 가능한 경우
             if 'rt_cd' in result and result['rt_cd'] != '0' and attempt < max_retries - 1:
-                print(f"API 오류: {result['msg_cd']} - {result.get('msg1', '알 수 없는 오류')}. 토큰 갱신 후 재시도...")
-                # 토큰 강제 갱신 후 재시도
-                access_token = get_access_token()
-                headers["authorization"] = f"Bearer {access_token}"
-                time.sleep(1)  # 재시도 전 1초 대기
+                msg1 = result.get('msg1', '알 수 없는 오류')
+                print(f"API 오류: {result.get('msg_cd', 'N/A')} - {msg1}. 재시도...")
+                if "초당" in msg1:
+                    time.sleep(2)
+                else:
+                    access_token = get_access_token()
+                    headers["authorization"] = f"Bearer {access_token}"
+                    time.sleep(1)
                 continue
-            
+
             return result
-            
+
         except Exception as e:
             print(f"잔고 조회 중 오류 발생 (시도 {attempt+1}/{max_retries}): {str(e)}")
             if attempt < max_retries - 1:
-                time.sleep(1)  # 재시도 전 1초 대기
+                time.sleep(2)
             else:
                 raise
 
@@ -216,19 +219,23 @@ def get_overseas_balance(ovrs_excg_cd="NASD"):
             
             # API 응답에 오류가 있고, 재시도 가능한 경우
             if 'rt_cd' in result and result['rt_cd'] != '0' and attempt < max_retries - 1:
-                print(f"API 오류: {result['msg_cd']} - {result.get('msg1', '알 수 없는 오류')}. 토큰 갱신 후 재시도...")
-                # 토큰 강제 갱신 후 재시도
-                access_token = get_access_token()
-                headers["authorization"] = f"Bearer {access_token}"
-                time.sleep(1)
+                msg1 = result.get('msg1', '알 수 없는 오류')
+                print(f"API 오류: {result.get('msg_cd', 'N/A')} - {msg1}. 재시도...")
+                # 초당 거래건수 초과인 경우 대기만, 그 외는 토큰 갱신
+                if "초당" in msg1:
+                    time.sleep(2)
+                else:
+                    access_token = get_access_token()
+                    headers["authorization"] = f"Bearer {access_token}"
+                    time.sleep(1)
                 continue
-            
+
             return result
-            
+
         except Exception as e:
             print(f"잔고 조회 중 오류 발생 (시도 {attempt+1}/{max_retries}): {str(e)}")
             if attempt < max_retries - 1:
-                time.sleep(1)  # 재시도 전 1초 대기
+                time.sleep(2)
             else:
                 raise
 
@@ -249,8 +256,8 @@ def get_all_overseas_balances():
             else:
                 print(f"{exchange} 거래소 잔고 조회 실패: {result.get('msg1', '알 수 없는 오류')}")
                 
-            # API 요청 간 지연
-            time.sleep(0.5)
+            # API 요청 간 지연 (KIS 초당 거래건수 제한 방지)
+            time.sleep(1)
             
         except Exception as e:
             print(f"{exchange} 거래소 잔고 조회 중 오류: {str(e)}")
@@ -330,12 +337,13 @@ def inquire_psamount(params):
     try:
         access_token = get_access_token()
         url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
+        tr_id = "VTTS3007R" if settings.KIS_USE_MOCK else "TTTS3007R"
         headers = {
             "Content-Type": "application/json; charset=utf-8",
             "authorization": f"Bearer {access_token}",
             "appkey": settings.KIS_APPKEY,
             "appsecret": settings.KIS_APPSECRET,
-            "tr_id": settings.TR_ID,
+            "tr_id": tr_id,
         }
         
         # 기존 파라미터 유지

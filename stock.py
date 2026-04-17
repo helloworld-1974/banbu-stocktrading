@@ -33,9 +33,9 @@ fred_indicators = {
     # 'CSUSHPINSA': '주택가격지수',  # 케이스-실러 주택 가격 지수 (월간) -> 5년 변동금리 모기지 (MORTGAGE5US): 부동산 시장이 대상 종목(빅테크) 주가 변동에 단기적으로 큰 영향 미치는지 불분명. 단기간(1주일 후) 예측에서는 영향력 제한적.
     # 'MORTGAGE30US': '30년 고정금리 모기지',  # 30년 만기 고정금리 모기지 금리 (주간)
     # 'MORTGAGE15US': '15년 고정금리 모기지',  # 15년 만기 고정금리 모기지 금리 (주간)
-    'MORTGAGE5US': '5년 변동금리 모기지',  # 5년 변동금리 모기지 금리 (주간)
-    'DTWEXM': '미국 달러 환율',  # 미국 무역가중 환율 (월간)
-    'M2': '통화 공급량 M2',  # M2 통화 공급량 (주간) -> FEDFUNDS나 금리 동향, 달러 인덱스, 금융스트레스지수가 이미 유동성 상황을 대략 파악 가능.
+    'MORTGAGE30US': '5년 변동금리 모기지',  # 30년 고정금리 모기지 (주간, MORTGAGE5US 중단으로 대체)
+    'DTWEXBGS': '미국 달러 환율',  # 미국 무역가중 환율 (월간, DTWEXM 중단으로 대체)
+    'M2SL': '통화 공급량 M2',  # M2 통화 공급량 (월간, M2 시리즈 ID 변경) -> FEDFUNDS나 금리 동향, 달러 인덱스, 금융스트레스지수가 이미 유동성 상황을 대략 파악 가능.
     # 'TEDRATE': 'TED 스프레드',  # 3개월 만기 미국 국채와 유로달러 금리 스프레드 (일간) -> FEDFUNDS나 금리 동향, 달러 인덱스, 금융스트레스지수가 이미 유동성 상황을 대략 파악 가능.
     # 'BAMLH0A0HYM2': '미국 하이일드 채권 스프레드',  # 미국 하이일드 채권과 국채 스프레드 (일간) -> 금융시장 신용위험을 반영하지만, 이미 금융스트레스지수(STLFSI4), 장단기금리차, VIX 등의 지표로 대략적인 위험 선호도나 스트레스 상황 파악 가능.
     # 'BAMLC0A0CM': '미국 회사채 스프레드',  # 미국 회사채와 국채 스프레드 (일간)
@@ -226,9 +226,9 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
         # 지표별 제공 주기에 따른 요청 주기 설정
         if code in ['FEDFUNDS', 'UMCSENT', 'UNRATE', 'USREC', 'PCE', 'INDPRO',
                     'HOUST', 'UNEMPLOY', 'RSAFS', 'CPIENGSL', 'AHETPI', 'PPIACO', 'CPIAUCSL',
-                    'CSUSHPINSA', 'DTWEXM']:
+                    'CSUSHPINSA', 'DTWEXBGS', 'M2SL']:
             frequency = 'm'
-        elif code in ['STLFSI4', 'M2', 'MORTGAGE30US', 'MORTGAGE15US', 'MORTGAGE5US']:
+        elif code in ['STLFSI4', 'MORTGAGE30US', 'MORTGAGE15US']:
             frequency = 'w'
         elif code in ['TDSP', 'A939RX0Q048SBEA', 'GDPC1', 'W019RCQ027SBEA', 'DRBLACBS']:
             frequency = 'q'

@@ -74,33 +74,37 @@ economic_columns = [
     "통화 공급량 M2", "가계 부채 비율", "GDP 성장률"
 ]
 
-async def update_economic_data_in_background():
+async def update_economic_data_in_background(force: bool = False):
     """
     백그라운드에서 경제 지표 데이터를 업데이트
+    force=True이면 장 중 체크를 무시하고 강제 수집
     """
     try:
         print("경제 지표 및 주가 데이터 업데이트 작업 시작...")
-        
+
         # 미국 장 마감 여부 확인 (서머타임 여부와 관계없이 22:30~06:00는 미국 장 시간으로 처리)
         now = datetime.now()
         korea_time = now.strftime('%H:%M')
         current_hour = int(korea_time.split(':')[0])
         current_min = int(korea_time.split(':')[1])
-        
+
         # 미국 장 시간인지 확인 (22:30~06:00)
         is_market_hours = False
-        
+
         # 22:30 이후
         if current_hour >= 22 and (current_hour > 22 or current_min >= 30):
             is_market_hours = True
         # 다음 날 06:00 이전
         elif current_hour < 6:
             is_market_hours = True
-            
-        # 미국 주식 시장이 열려 있는 경우, 데이터 수집 연기
-        if is_market_hours:
+
+        # 미국 주식 시장이 열려 있는 경우, 데이터 수집 연기 (force=True이면 무시)
+        if is_market_hours and not force:
             print(f"현재 시간 {korea_time}은 미국 주식 시장 운영 시간입니다. 장 마감 후에 데이터를 수집합니다.")
             return
+
+        if force and is_market_hours:
+            print(f"현재 시간 {korea_time}은 장 중이지만, 강제 수집 모드로 실행합니다.")
 
         # 마지막 수집 날짜 조회
         start_date = get_last_updated_date()
@@ -170,7 +174,7 @@ async def update_economic_data_in_background():
             
             # 이전 데이터로 null 값 채우기 (모든 컬럼 대상)
             for col_name, value in previous_data.items():
-                if col_name != "날짜" and col_name not in data_dict and value is not None:
+                if col_name not in ("날짜", "id") and col_name not in data_dict and value is not None:
                     data_dict[col_name] = value
             
             # 중복 방지를 위해 기존 데이터가 있으면 업데이트, 없으면 삽입
