@@ -109,6 +109,12 @@ pip install -r requirements.txt
 >
 > ML 예측 기능을 사용하지 않는다면 TensorFlow 설치를 건너뛰어도 서버는 정상 동작합니다.
 
+> **참고: Claude API (anthropic 패키지)**
+>
+> LLM 최종 검토 기능에 필요합니다. `requirements.txt`에 포함되어 있어 자동 설치됩니다.
+> 사용하려면 `.env`에 `ANTHROPIC_API_KEY`를 입력하세요.
+> API 키 발급: https://console.anthropic.com
+
 ### 4단계: 환경변수 설정
 
 `.env_dev` 파일을 복사해서 `.env`를 만듭니다:
