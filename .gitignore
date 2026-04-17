@@ -26,5 +26,8 @@ saved_models/
 .vscode/
 .idea/
 
+# Git 인증 정보
+.git-credentials-info
+
 # Claude Code
 .claude/
