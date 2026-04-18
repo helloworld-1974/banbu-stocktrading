@@ -8,7 +8,7 @@ from app.db.supabase import supabase
 # 재시도 설정
 MAX_RETRIES = 3
 RETRY_DELAYS = [5, 15, 30]  # 재시도 간격 (초): 5초 → 15초 → 30초
-MODELS = ["claude-opus-4-6", "claude-sonnet-4-6"]  # Opus 실패 시 Sonnet 폴백
+MODELS = ["claude-opus-4-7", "claude-sonnet-4-6"]  # Opus 실패 시 Sonnet 폴백
 
 
 def _save_llm_decision_logs(candidates: list, decision_map: dict, market_analysis: str, vix_value: float = None):
