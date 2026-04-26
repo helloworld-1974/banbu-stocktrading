@@ -43,7 +43,7 @@ def get_access_token():
         
         try:
             # 테이블에서 토큰 레코드 조회
-            response = supabase.table("access_tokens").select("*").order("created_at", desc=True).limit(1).execute()
+            response = supabase.table("access_tokens").select("*").order("updated_at", desc=True).limit(1).execute()
             
             if response.data:
                 token_data = response.data[0]
