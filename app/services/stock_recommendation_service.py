@@ -870,6 +870,41 @@ class StockRecommendationService:
             except Exception as e:
                 print(f"trade_records 조회 실패 (고정 비율 폴백): {e}")
 
+            # 6-1. ATR/익절가/손절가가 누락된 holding 자동 백필 (매수 시 silent 실패 복구)
+            for ticker, tr in trade_records_map.items():
+                if tr.get("take_profit_price") and tr.get("stop_loss_price"):
+                    continue
+                try:
+                    api_excd = EXCHANGE_TO_API.get(TICKER_TO_EXCHANGE.get(ticker, "NASD"), "NAS")
+                    # buy_date 기준 일봉으로 ATR 계산 (매수 시점 의도 보존)
+                    buy_date_str = tr.get("buy_date") or ""
+                    buy_ymd = buy_date_str[:10].replace("-", "") if len(buy_date_str) >= 10 else ""
+                    vol_result = get_overseas_daily_price(api_excd, ticker, gubn="0", bymd=buy_ymd)
+                    if not (vol_result and vol_result.get("rt_cd") == "0"):
+                        print(f"  {ticker} ATR 백필 실패: 일봉 API 조회 실패 (bymd={buy_ymd})")
+                        continue
+                    atr_value = self.calculate_atr(vol_result.get("output2", []))
+                    if not atr_value:
+                        print(f"  {ticker} ATR 백필 실패: ATR 계산 None (bymd={buy_ymd})")
+                        continue
+                    buy_price = float(tr.get("buy_price") or 0)
+                    if buy_price <= 0:
+                        print(f"  {ticker} ATR 백필 실패: buy_price 누락")
+                        continue
+                    tp_price = round(buy_price + atr_value * 2.5, 2)
+                    sl_price = round(buy_price - atr_value * 1.5, 2)
+                    supabase.table("trade_records").update({
+                        "atr": atr_value,
+                        "take_profit_price": tp_price,
+                        "stop_loss_price": sl_price,
+                    }).eq("id", tr["id"]).execute()
+                    tr["atr"] = atr_value
+                    tr["take_profit_price"] = tp_price
+                    tr["stop_loss_price"] = sl_price
+                    print(f"  {ticker} ATR 백필 완료: ATR={atr_value}, 익절가=${tp_price}, 손절가=${sl_price}")
+                except Exception as e:
+                    print(f"  {ticker} ATR 백필 중 오류: {e}")
+
             # 6. 매도 대상 종목 식별
             sell_candidates = []
             ticker_to_stock = {v: k for k, v in STOCK_TO_TICKER.items()}
