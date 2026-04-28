@@ -79,7 +79,7 @@ def review_buy_candidates(candidates: list, vix_value: float = None) -> dict:
     for i, c in enumerate(candidates, 1):
         summary = f"""
 {i}. {c.get('stock_name', 'N/A')} ({c.get('ticker', 'N/A')})
-   - ML 예측: 상승확률 {c.get('rise_probability', 0):.2f}%, 예측가 ${c.get('predicted_price', 0):.2f} (현재가 ${c.get('last_price', 0):.2f})
+   - ML 예측: 예측 상승률 +{c.get('rise_probability', 0):.2f}% (현재가 ${c.get('last_price', 0):.2f} → 예측가 ${c.get('predicted_price', 0):.2f})
    - 기술적 지표:
      골든크로스: {'✓' if c.get('golden_cross') else '✗'} (SMA20: {c.get('sma20', 0):.2f}, SMA50: {c.get('sma50', 0):.2f})
      RSI: {c.get('rsi', 0):.2f} {'(과매도 반등)' if c.get('rsi', 50) < 30 else '(강세 진입)' if 50 <= c.get('rsi', 50) <= 65 else '(매수구간 아님)'}
@@ -88,7 +88,7 @@ def review_buy_candidates(candidates: list, vix_value: float = None) -> dict:
    - ADX(추세강도): {c.get('adx', 'N/A')} {'(강한 추세)' if c.get('adx') and c.get('adx') > 25 else '(추세 약함)' if c.get('adx') and c.get('adx') < 20 else '(보통)'}
    - 감성분석: {c.get('sentiment_score', 'N/A')} (기사 {c.get('article_count', 0)}개)
    - 종합점수: {c.get('composite_score', 0):.4f}
-     (상승확률: {c.get('rise_score', 0)}, 기술: {c.get('tech_score', 0)}, 거래량: {c.get('volume_score', 0)}, ADX: {c.get('adx_score', 0)}, VIX: {c.get('vix_score', 0)})"""
+     (예측상승률: {c.get('rise_score', 0)}, 기술: {c.get('tech_score', 0)}, 거래량: {c.get('volume_score', 0)}, ADX: {c.get('adx_score', 0)}, VIX: {c.get('vix_score', 0)})"""
         stock_summaries.append(summary)
 
     today = datetime.now().strftime("%Y-%m-%d")
