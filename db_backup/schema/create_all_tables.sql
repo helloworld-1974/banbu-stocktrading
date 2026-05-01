@@ -81,9 +81,10 @@ CREATE INDEX IF NOT EXISTS idx_economic_날짜 ON economic_and_stock_data ("날�
 
 
 -- 2. stock_analysis_results: ML 모델 성능 분석 결과
+--    predict_colab.py 의 save_analysis_to_db() 가 INSERT 하는 컬럼셋과 일치
 CREATE TABLE IF NOT EXISTS stock_analysis_results (
     id BIGSERIAL PRIMARY KEY,
-    "Stock" TEXT NOT NULL,
+    "Stock" TEXT,
     "MAE" FLOAT8,
     "MSE" FLOAT8,
     "RMSE" FLOAT8,
@@ -91,12 +92,11 @@ CREATE TABLE IF NOT EXISTS stock_analysis_results (
     "Accuracy (%)" FLOAT8,
     "Last Actual Price" FLOAT8,
     "Predicted Future Price" FLOAT8,
-    "Predicted Change (%)" FLOAT8,
-    "Direction" TEXT,
+    "Predicted Rise" BOOLEAN,
     "Rise Probability (%)" FLOAT8,
-    "Analysis Date" TIMESTAMPTZ DEFAULT NOW(),
-    "prediction_date" DATE,
-    "actual_future_price" FLOAT8
+    "Recommendation" TEXT,
+    "Analysis" TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 
