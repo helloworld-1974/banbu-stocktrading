@@ -19,3 +19,4 @@ scikit-learn>=1.3.0
 matplotlib>=3.7.0
 joblib>=1.3.0
 anthropic>=0.30.0
+kaggle>=1.6.0

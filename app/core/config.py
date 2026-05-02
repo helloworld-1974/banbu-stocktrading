@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     TR_ID: str = os.getenv("TR_ID")
 
+    # Kaggle API (ML 예측 노트북 트리거용)
+    # 신형 Access Token (KGAT_*) 우선, 없으면 기존 KAGGLE_KEY (32자리 hex) 사용
+    KAGGLE_USERNAME: str = os.getenv("KAGGLE_USERNAME", "")
+    KAGGLE_API_TOKEN: str = os.getenv("KAGGLE_API_TOKEN", "")
+    KAGGLE_KEY: str = os.getenv("KAGGLE_KEY", "")
+    KAGGLE_KERNEL_SLUG: str = os.getenv("KAGGLE_KERNEL_SLUG", "stock-prediction")
+    KAGGLE_NOTEBOOK_DIR: str = os.getenv("KAGGLE_NOTEBOOK_DIR", "kaggle_notebook")
+
     @property
     def kis_base_url(self) -> str:
         """사용할 한국투자증권 API URL 반환"""
