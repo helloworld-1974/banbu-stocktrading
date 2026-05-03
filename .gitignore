@@ -1,6 +1,11 @@
 # 환경 변수 (API 키, 시크릿)
 .env
 
+# Kaggle 인증 + push 시 secrets 자동 주입되는 노트북 (절대 commit 금지)
+.kaggle/
+kaggle.json
+kaggle_notebook/predict.ipynb
+
 # 가상환경
 .venv/
 .venv_predict/

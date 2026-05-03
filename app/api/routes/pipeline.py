@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from app.services.stock_recommendation_service import StockRecommendationService
 from app.services.llm_review_service import review_buy_candidates
 from app.services import ml_trigger_service
+from app.utils.scheduler import _execute_daily_pipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -290,3 +291,77 @@ async def kaggle_trigger_ml(max_wait_sec: int = 900):
     except Exception as e:
         logger.error(f"Kaggle 트리거 중 오류: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════
+# 일일 통합 파이프라인 (4단계 순차 실행)
+# ══════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/run-full-daily",
+    response_model=dict,
+    summary="4단계 일일 파이프라인 통합 실행 (경제데이터 → Kaggle ML → 기술지표+감성 → LLM+매수)",
+)
+async def run_full_daily():
+    """
+    매일 한 번 실행되는 전체 파이프라인.
+
+    ## 실행 순서
+
+      Step 1) 경제 데이터 + 주가 수집
+              update_economic_data_in_background(force=True)
+              → economic_and_stock_data 테이블 갱신
+
+      Step 2) Kaggle ML 예측 (5~10분)
+              ml_trigger_service.trigger_and_wait()
+              → predicted_stocks + stock_analysis_results 테이블 갱신
+
+      Step 3) 기술 지표 + 뉴스 감성 분석
+              service.generate_technical_recommendations()
+              service.fetch_and_store_sentiment_for_recommendations()
+              → stock_recommendations + ticker_sentiment_analysis 테이블 갱신
+
+      Step 4) LLM 검토 + KIS 매수 주문
+              stock_scheduler._execute_auto_buy(force=True)
+              → trade_records 테이블 갱신 + KIS 모의/실투자 매수 주문
+
+    ## 에러 정책
+
+      - 단계 중 하나라도 실패하면 **HTTPException 500 으로 즉시 중단**
+      - 응답 detail 에 어느 단계에서 실패했는지 명시 (`failed_step`, `step_name`, `error`)
+      - 이미 성공한 단계는 `completed_steps` 에 기록되어 함께 반환
+
+    ## 자동 스케줄
+
+      - 매일 KST 21:00 자동 실행 (`scheduler._run_daily_pipeline`)
+      - 이 API 는 그 동일 로직을 즉시 호출하는 수동 트리거
+
+    ## 예상 소요 시간
+
+      약 8~13분 (Step 2 가 가장 느림)
+
+    ## 구현 노트
+
+      4단계 로직은 `app/utils/scheduler.py:_execute_daily_pipeline()` 에 단일하게 정의되어 있고,
+      이 엔드포인트 + KST 21:00 자동 스케줄러 둘 다 같은 함수를 호출. (중복 제거)
+    """
+    result = await _execute_daily_pipeline()
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "failed_step": result["failed_step"],
+                "step_name": result["step_name"],
+                "error": result["error"],
+                "elapsed_sec": result["total_elapsed_sec"],
+                "completed_steps": result["completed_steps"],
+            },
+        )
+
+    return {
+        "success": True,
+        "message": "전체 파이프라인 4단계 모두 성공",
+        "total_elapsed_sec": result["total_elapsed_sec"],
+        "steps": result["completed_steps"],
+    }

@@ -9,9 +9,15 @@ Kaggle API로 ML 예측 노트북을 트리거하는 서비스.
   - trigger_and_wait(): push 후 완료될 때까지 폴링 대기
 
 인증:
-  - .env 의 KAGGLE_USERNAME / KAGGLE_KEY 를 subprocess 환경변수로 주입
-  - ~/.kaggle/kaggle.json 파일 불필요
+  - .env 의 KAGGLE_API_TOKEN (또는 KAGGLE_USERNAME+KAGGLE_KEY) 를 subprocess 환경변수로 주입
+
+Secrets 주입:
+  - Kaggle UserSecretsClient 는 API push 로 만들어진 kernel 버전에서 작동하지 않음
+  - push 직전에 predict.py 를 .ipynb 로 변환하면서 .env 의 SUPABASE_URL/KEY 를
+    첫 셀 os.environ 으로 박아서 보냄 → 매번 fresh 한 값으로 전송
+  - 결과 .ipynb 는 .gitignore 처리 (secrets 가 들어가있어서 git 절대 커밋 금지)
 """
+import json
 import os
 import subprocess
 import time
@@ -114,9 +120,67 @@ def check_auth() -> Tuple[bool, str]:
     return False, f"Kaggle 인증 실패 (rc={rc}): {err.strip() or out.strip()}"
 
 
+def _build_ipynb_with_injected_secrets(py_path: Path, ipynb_path: Path) -> None:
+    """
+    predict.py 를 읽어서 secrets 주입 셀을 prepend 한 .ipynb 로 변환.
+
+    Kaggle UserSecretsClient 가 API push 로 만든 kernel 버전에서
+    "Connection error trying to communicate with service" 로 실패하는
+    이슈 우회용. .env 값을 첫 셀에 os.environ 으로 박아서 보냄.
+
+    결과 ipynb 는 secrets 가 들어있으므로 .gitignore 필수.
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        raise RuntimeError(
+            "SUPABASE_URL / SUPABASE_KEY 가 .env 에 없습니다. "
+            "predict.ipynb 에 주입할 값이 없어 push 불가."
+        )
+
+    with open(py_path, "r", encoding="utf-8") as f:
+        code = f.read()
+
+    # 첫 셀: secrets 를 os.environ 에 주입 (predict.py 가 os.environ.get 으로 읽음)
+    secret_cell = {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# AUTO-INJECTED by ml_trigger_service. Do NOT edit / do NOT commit.\n",
+            "import os\n",
+            f"os.environ['SUPABASE_URL'] = {settings.SUPABASE_URL!r}\n",
+            f"os.environ['SUPABASE_KEY'] = {settings.SUPABASE_KEY!r}\n",
+        ],
+    }
+
+    # 두 번째 셀: 원본 predict.py 코드 그대로
+    main_cell = {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": code.splitlines(keepends=True),
+    }
+
+    nb = {
+        "cells": [secret_cell, main_cell],
+        "metadata": {
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+            "language_info": {"name": "python"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+
+    with open(ipynb_path, "w", encoding="utf-8") as f:
+        json.dump(nb, f, ensure_ascii=False, indent=1)
+
+
 def push_kernel() -> Tuple[bool, str]:
     """
     노트북 push (= 새 버전 + 실행 트리거).
+    push 직전에 predict.py + .env secrets 로 predict.ipynb 를 새로 생성.
+
     Returns: (success, message)
     """
     nb_dir = _notebook_dir()
@@ -128,6 +192,22 @@ def push_kernel() -> Tuple[bool, str]:
     if not (nb_dir / "kernel-metadata.json").exists():
         msg = f"kernel-metadata.json 없음: {nb_dir}"
         logger.error(msg)
+        return False, msg
+
+    # secrets 주입된 ipynb 생성
+    py_path = nb_dir / "predict.py"
+    ipynb_path = nb_dir / "predict.ipynb"
+    if not py_path.exists():
+        msg = f"predict.py 없음: {py_path} (secrets 주입 위해 .py 원본 필요)"
+        logger.error(msg)
+        return False, msg
+
+    try:
+        _build_ipynb_with_injected_secrets(py_path, ipynb_path)
+        logger.info(f"predict.ipynb 재생성 완료 (secrets 주입됨)")
+    except Exception as e:
+        msg = f"ipynb 생성 실패: {e}"
+        logger.error(msg, exc_info=True)
         return False, msg
 
     rc, out, err = _run_kaggle_cmd(["kernels", "push", "-p", str(nb_dir)], timeout=120)

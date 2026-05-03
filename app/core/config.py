@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     KAGGLE_KERNEL_SLUG: str = os.getenv("KAGGLE_KERNEL_SLUG", "stock-prediction")
     KAGGLE_NOTEBOOK_DIR: str = os.getenv("KAGGLE_NOTEBOOK_DIR", "kaggle_notebook")
 
+    # Slack 알림 (비어있으면 알림 비활성)
+    SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")
+    SLACK_NOTIFY_LEVEL: str = os.getenv("SLACK_NOTIFY_LEVEL", "info")
+
     @property
     def kis_base_url(self) -> str:
         """사용할 한국투자증권 API URL 반환"""

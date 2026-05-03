@@ -4,9 +4,10 @@ import uvicorn
 from app.api.api import api_router
 from app.services.economic_service import update_economic_data_in_background
 from app.utils.scheduler import (
-    start_scheduler, stop_scheduler, 
+    start_scheduler, stop_scheduler,
     start_sell_scheduler, stop_sell_scheduler,
-    start_economic_data_scheduler, stop_economic_data_scheduler
+    start_economic_data_scheduler, stop_economic_data_scheduler,
+    start_daily_pipeline_scheduler, stop_daily_pipeline_scheduler,
 )
 from contextlib import asynccontextmanager
 import threading
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI):
     stop_scheduler()  # 매수 스케줄러 종료
     stop_sell_scheduler()  # 매도 스케줄러 종료
     stop_economic_data_scheduler()  # 경제 데이터 스케줄러 종료
+    stop_daily_pipeline_scheduler()  # 일일 통합 파이프라인 스케줄러 종료
 
 app = FastAPI(title="주식 분석 및 추천 API", lifespan=lifespan)
 
@@ -49,6 +51,9 @@ async def startup():
     # 주식 자동매매 스케줄러 시작
     start_scheduler()
     start_sell_scheduler()
+
+    # 일일 통합 파이프라인 스케줄러 시작 (매일 KST 21:00)
+    start_daily_pipeline_scheduler()
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False)

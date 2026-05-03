@@ -12,6 +12,13 @@ from app.core.config import settings
 import logging
 from app.services.economic_service import update_economic_data_in_background
 from app.services.llm_review_service import review_buy_candidates
+from app.services.ml_trigger_service import trigger_and_wait
+from app.services.notification_service import (
+    notify_data_ready,
+    notify_llm_decisions,
+    notify_buy_executed,
+    notify_sell_executed,
+)
 
 # 로깅 설정
 logging.basicConfig(
@@ -427,6 +434,20 @@ class StockScheduler:
                             "profit_loss_pct": round(profit_loss_pct, 2) if profit_loss_pct else None,
                         }).eq("ticker", ticker).eq("status", "holding").execute()
                         logger.info(f"  {stock_name}({ticker}) trade_records 매도 주문 접수 (사유: {sell_reason}, 예상손익: {profit_loss_pct:.2f}%)" if profit_loss_pct else f"  {stock_name}({ticker}) trade_records 매도 주문 접수 (사유: {sell_reason})")
+
+                        # ★ ④ 매도 체결 Slack 알림 (보유 현황표 자동 첨부)
+                        try:
+                            notify_sell_executed(
+                                ticker=ticker,
+                                stock_name=stock_name,
+                                qty=quantity,
+                                price=current_price,
+                                sell_reason=sell_reason,
+                                profit_loss=round(profit_loss, 2) if profit_loss is not None else 0,
+                                profit_loss_pct=round(profit_loss_pct, 2) if profit_loss_pct is not None else 0,
+                            )
+                        except Exception as notify_e:
+                            logger.warning(f"매도 체결 알림 발송 실패: {notify_e}")
                     except Exception as tr_e:
                         logger.error(f"  {stock_name}({ticker}) trade_records 업데이트 실패: {tr_e}")
                 else:
@@ -441,8 +462,12 @@ class StockScheduler:
 
         logger.info("자동 매도 처리가 완료되었습니다.")
     
-    async def _execute_auto_buy(self):
-        """자동 매수 실행 로직 - 뉴욕 시간 10:30 ET에 실행"""
+    async def _execute_auto_buy(self, force: bool = False):
+        """자동 매수 실행 로직 - 뉴욕 시간 10:30 ET에 실행
+
+        Args:
+            force: True 면 시간/중복 체크 우회 (통합 파이프라인에서 즉시 실행 시 사용)
+        """
         # 뉴욕 시간 확인 (서머타임 자동 고려)
         now_in_ny = datetime.now(pytz.timezone('America/New_York'))
         ny_hour = now_in_ny.hour
@@ -450,18 +475,21 @@ class StockScheduler:
         ny_weekday = now_in_ny.weekday()
         ny_date = now_in_ny.date()
 
-        # 평일 10:30~10:35 ET 사이에만 실행 (장 시작 후 1시간)
-        is_weekday = 0 <= ny_weekday <= 4
-        is_buy_time = (ny_hour == 10 and 30 <= ny_minute < 35)
+        if not force:
+            # 평일 10:30~10:35 ET 사이에만 실행 (장 시작 후 1시간)
+            is_weekday = 0 <= ny_weekday <= 4
+            is_buy_time = (ny_hour == 10 and 30 <= ny_minute < 35)
 
-        if not (is_weekday and is_buy_time):
-            return
+            if not (is_weekday and is_buy_time):
+                return
 
-        # 당일 이미 매수 실행했으면 스킵
-        if self._last_buy_date == ny_date:
-            return
+            # 당일 이미 매수 실행했으면 스킵
+            if self._last_buy_date == ny_date:
+                return
 
-        logger.info(f"자동 매수 작업 시작 (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})")
+        logger.info(
+            f"자동 매수 작업 시작 (force={force}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})"
+        )
         self._last_buy_date = ny_date
 
         now_in_korea = datetime.now(pytz.timezone('Asia/Seoul'))
@@ -517,6 +545,17 @@ class StockScheduler:
         # LLM 최종 검토 (거부권만 행사)
         vix_value = buy_candidates[0].get("vix_value") if buy_candidates else None
         review_result = review_buy_candidates(buy_candidates, vix_value)
+
+        # ★ ② 오늘 매수/홀드 결정 종목 Slack 알림
+        try:
+            notify_llm_decisions(
+                buy_candidates=review_result["reviewed_candidates"],
+                held_candidates=review_result["held_candidates"],
+                market_analysis=review_result.get("llm_reasoning", ""),
+            )
+        except Exception as notify_e:
+            logger.warning(f"LLM 결정 알림 발송 실패: {notify_e}")
+
         buy_candidates = review_result["reviewed_candidates"]
 
         if not buy_candidates:
@@ -620,6 +659,18 @@ class StockScheduler:
                 if order_result.get("rt_cd") == "0":
                     logger.info(f"{stock_name}({ticker}) 매수 주문 성공: {order_result.get('msg1', '주문이 접수되었습니다.')}")
                     holding_tickers.add(pure_ticker)  # 중복 매수 방지
+
+                    # ★ ③ 매수 체결 Slack 알림 (보유 현황표 자동 첨부)
+                    try:
+                        notify_buy_executed(
+                            ticker=pure_ticker,
+                            stock_name=stock_name,
+                            qty=quantity,
+                            price=current_price,
+                            composite_score=candidate.get("composite_score", 0),
+                        )
+                    except Exception as notify_e:
+                        logger.warning(f"매수 체결 알림 발송 실패: {notify_e}")
 
                     # trade_records에 ATR 기반 익절/손절 기준 저장
                     try:
@@ -758,4 +809,186 @@ def stop_economic_data_scheduler():
 
 def run_economic_data_update_now(force: bool = False):
     """즉시 경제 데이터 업데이트 실행 함수 (force=True: 장 중에도 강제 수집)"""
-    return _run_economic_data_update(force=force) 
+    return _run_economic_data_update(force=force)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 일일 통합 파이프라인 (KST 21:00)
+#   Step 1) 경제 데이터 수집
+#   Step 2) Kaggle ML 예측
+#   Step 3) 기술 지표 + 감성 분석
+#   Step 4) LLM 검토 + KIS 매수 주문
+# ══════════════════════════════════════════════════════════════════
+
+daily_pipeline_scheduler_running = False
+
+
+async def _execute_daily_pipeline() -> dict:
+    """
+    4단계 순차 실행. 각 단계 에러 시 즉시 중단.
+    스케줄러 (KST 21:00) 와 API 엔드포인트 (POST /pipeline/run-full-daily) 가 모두 호출.
+
+    Returns:
+        {
+            "success": bool,
+            "failed_step": str | None,            # 실패 단계 키 (예: "2_kaggle_ml")
+            "step_name": str | None,              # 실패 단계 한글명
+            "error": str | None,                  # 실패 사유
+            "completed_steps": {                  # 성공한 단계들
+                "1_economic_data": {"step_name": "...", "elapsed_sec": int},
+                ...
+            },
+            "total_elapsed_sec": int,
+        }
+    """
+    pipeline_logger = logging.getLogger('daily_pipeline')
+    pipeline_logger.info("===== Daily Pipeline 시작 =====")
+    pipeline_start = time.time()
+    completed_steps: dict = {}
+
+    def _fail(step_key: str, step_name: str, error: str) -> dict:
+        return {
+            "success": False,
+            "failed_step": step_key,
+            "step_name": step_name,
+            "error": error,
+            "completed_steps": completed_steps,
+            "total_elapsed_sec": int(time.time() - pipeline_start),
+        }
+
+    # ── Step 1: 경제 데이터 수집 ──────────────────────────────
+    step_name = "경제 데이터 + 주가 수집"
+    step_key = "1_economic_data"
+    pipeline_logger.info(f"[1/4] {step_name} 시작")
+    step_start = time.time()
+    try:
+        await update_economic_data_in_background(force=True)
+        elapsed = int(time.time() - step_start)
+        completed_steps[step_key] = {"step_name": step_name, "elapsed_sec": elapsed}
+        pipeline_logger.info(f"[1/4] {step_name} 완료 ({elapsed}초)")
+    except Exception as e:
+        pipeline_logger.error(f"[1/4] {step_name} 실패: {e}", exc_info=True)
+        return _fail(step_key, step_name, str(e))
+
+    # ── Step 2: Kaggle ML 예측 ──────────────────────────────
+    step_name = "Kaggle ML 예측"
+    step_key = "2_kaggle_ml"
+    pipeline_logger.info(f"[2/4] {step_name} 시작")
+    step_start = time.time()
+    try:
+        success, msg, meta = trigger_and_wait()
+        if not success:
+            raise RuntimeError(f"Kaggle 실행 실패: {msg} (meta={meta})")
+        elapsed = int(time.time() - step_start)
+        completed_steps[step_key] = {"step_name": step_name, "elapsed_sec": elapsed}
+        pipeline_logger.info(f"[2/4] {step_name} 완료 ({elapsed}초)")
+    except Exception as e:
+        pipeline_logger.error(f"[2/4] {step_name} 실패: {e}", exc_info=True)
+        return _fail(step_key, step_name, str(e))
+
+    # ── Step 3: 기술 지표 + 감성 분석 ──────────────────────────
+    step_name = "기술 지표 + 뉴스 감성 분석"
+    step_key = "3_technical_sentiment"
+    pipeline_logger.info(f"[3/4] {step_name} 시작")
+    step_start = time.time()
+    try:
+        service = StockRecommendationService()
+        service.generate_technical_recommendations()
+        service.fetch_and_store_sentiment_for_recommendations()
+        elapsed = int(time.time() - step_start)
+        completed_steps[step_key] = {"step_name": step_name, "elapsed_sec": elapsed}
+        pipeline_logger.info(f"[3/4] {step_name} 완료 ({elapsed}초)")
+    except Exception as e:
+        pipeline_logger.error(f"[3/4] {step_name} 실패: {e}", exc_info=True)
+        return _fail(step_key, step_name, str(e))
+
+    # ★ ① 데이터 수집 완료 Slack 알림 (Step 1~3 끝난 직후, Step 4 직전)
+    try:
+        data_total = int(time.time() - pipeline_start)
+        notify_data_ready(
+            elapsed_sec=data_total,
+            steps_summary={
+                "1_economic": completed_steps["1_economic_data"]["elapsed_sec"],
+                "2_kaggle": completed_steps["2_kaggle_ml"]["elapsed_sec"],
+                "3_tech_sent": completed_steps["3_technical_sentiment"]["elapsed_sec"],
+            },
+        )
+    except Exception as notify_e:
+        pipeline_logger.warning(f"데이터 수집 완료 알림 발송 실패: {notify_e}")
+
+    # ── Step 4: LLM 검토 + KIS 매수 주문 ────────────────────
+    step_name = "LLM 최종 검토 + KIS 매수 주문"
+    step_key = "4_llm_buy"
+    pipeline_logger.info(f"[4/4] {step_name} 시작")
+    step_start = time.time()
+    try:
+        await stock_scheduler._execute_auto_buy(force=True)
+        elapsed = int(time.time() - step_start)
+        completed_steps[step_key] = {"step_name": step_name, "elapsed_sec": elapsed}
+        pipeline_logger.info(f"[4/4] {step_name} 완료 ({elapsed}초)")
+    except Exception as e:
+        pipeline_logger.error(f"[4/4] {step_name} 실패: {e}", exc_info=True)
+        return _fail(step_key, step_name, str(e))
+
+    total_elapsed = int(time.time() - pipeline_start)
+    pipeline_logger.info(f"===== Daily Pipeline 완료 (총 {total_elapsed}초) =====")
+    return {
+        "success": True,
+        "failed_step": None,
+        "step_name": None,
+        "error": None,
+        "completed_steps": completed_steps,
+        "total_elapsed_sec": total_elapsed,
+    }
+
+
+def _run_daily_pipeline():
+    """schedule 라이브러리에서 호출되는 진입점"""
+    pipeline_logger = logging.getLogger('daily_pipeline')
+    try:
+        result = asyncio.run(_execute_daily_pipeline())
+        if not result["success"]:
+            pipeline_logger.error(
+                f"Daily Pipeline 중단 — 실패 단계: {result['failed_step']}, "
+                f"사유: {result['error']}"
+            )
+        return result["success"]
+    except Exception as e:
+        pipeline_logger.error(f"Daily Pipeline 실행 중 예외: {e}", exc_info=True)
+        return False
+
+
+def start_daily_pipeline_scheduler():
+    """일일 통합 파이프라인 스케줄러 시작 (매일 KST 21:00)"""
+    global daily_pipeline_scheduler_running
+    pipeline_logger = logging.getLogger('daily_pipeline')
+
+    if daily_pipeline_scheduler_running:
+        pipeline_logger.warning("일일 파이프라인 스케줄러가 이미 실행 중입니다.")
+        return False
+
+    # 기존 job 정리
+    for job in [j for j in schedule.jobs if j.job_func.__name__ == '_run_daily_pipeline']:
+        schedule.cancel_job(job)
+
+    schedule.every().day.at("21:00").do(_run_daily_pipeline)
+    daily_pipeline_scheduler_running = True
+    pipeline_logger.info("일일 파이프라인 스케줄러 시작 (매일 KST 21:00)")
+    return True
+
+
+def stop_daily_pipeline_scheduler():
+    """일일 통합 파이프라인 스케줄러 중지"""
+    global daily_pipeline_scheduler_running
+    pipeline_logger = logging.getLogger('daily_pipeline')
+
+    for job in [j for j in schedule.jobs if j.job_func.__name__ == '_run_daily_pipeline']:
+        schedule.cancel_job(job)
+    daily_pipeline_scheduler_running = False
+    pipeline_logger.info("일일 파이프라인 스케줄러 중지됨.")
+    return True
+
+
+def run_daily_pipeline_now():
+    """즉시 일일 파이프라인 실행 (테스트/수동 트리거용)"""
+    return _run_daily_pipeline()
