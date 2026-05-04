@@ -5,7 +5,10 @@ import pytz
 from datetime import datetime, timedelta
 import threading
 from app.services.stock_recommendation_service import StockRecommendationService, TICKER_TO_EXCHANGE, EXCHANGE_TO_API
-from app.services.balance_service import get_current_price, order_overseas_stock, get_all_overseas_balances, inquire_psamount, get_overseas_nccs
+from app.services.balance_service import (
+    get_current_price, order_overseas_stock, get_all_overseas_balances,
+    inquire_psamount, get_overseas_nccs, current_account_type,
+)
 from app.services.volume_service import get_overseas_daily_price
 from app.db.supabase import supabase
 from app.core.config import settings
@@ -160,10 +163,10 @@ class StockScheduler:
             balance_result: 이미 조회한 KIS 잔고 결과 (None이면 새로 조회)
         """
         try:
-            # 활성 레코드 조회 (buy_ordered, sell_ordered, holding)
+            # 활성 레코드 조회 (buy_ordered, sell_ordered, holding) — 현재 계좌 모드만
             active_response = supabase.table("trade_records").select("*").in_(
                 "status", ["buy_ordered", "sell_ordered", "holding"]
-            ).execute()
+            ).eq("account_type", current_account_type()).execute()
             active_records = active_response.data if active_response.data else []
 
             # KIS 원장에서 실제 보유 종목 조회 (외부에서 전달받지 않았으면 새로 조회)
@@ -270,8 +273,9 @@ class StockScheduler:
                         "holding_quantity": qty,
                         "exchange_code": item.get("ovrs_excg_cd", ""),
                         "status": "holding",
+                        "account_type": current_account_type(),
                     }).execute()
-                    logger.warning(f"  {ticker} 고아 감지: KIS 보유({qty}주) but trade_records 없음 → 레코드 자동 생성")
+                    logger.warning(f"  {ticker} 고아 감지: KIS 보유({qty}주) but trade_records 없음 → 레코드 자동 생성 (account={current_account_type()})")
 
         except Exception as e:
             logger.error(f"주문 정합성 확인 실패: {e}", exc_info=True)
@@ -320,9 +324,9 @@ class StockScheduler:
         
         sell_candidates = sell_candidates_result.get("sell_candidates", [])
 
-        # sell_ordered 상태인 종목은 중복 매도 방지
+        # sell_ordered 상태인 종목은 중복 매도 방지 — 현재 계좌 모드만
         try:
-            sell_ordered_response = supabase.table("trade_records").select("ticker").eq("status", "sell_ordered").execute()
+            sell_ordered_response = supabase.table("trade_records").select("ticker").eq("status", "sell_ordered").eq("account_type", current_account_type()).execute()
             sell_ordered_tickers = {rec["ticker"] for rec in (sell_ordered_response.data or [])}
             if sell_ordered_tickers:
                 before_count = len(sell_candidates)
@@ -432,7 +436,7 @@ class StockScheduler:
                             "sell_reason": sell_reason,
                             "profit_loss": round(profit_loss, 2) if profit_loss else None,
                             "profit_loss_pct": round(profit_loss_pct, 2) if profit_loss_pct else None,
-                        }).eq("ticker", ticker).eq("status", "holding").execute()
+                        }).eq("ticker", ticker).eq("status", "holding").eq("account_type", current_account_type()).execute()
                         logger.info(f"  {stock_name}({ticker}) trade_records 매도 주문 접수 (사유: {sell_reason}, 예상손익: {profit_loss_pct:.2f}%)" if profit_loss_pct else f"  {stock_name}({ticker}) trade_records 매도 주문 접수 (사유: {sell_reason})")
 
                         # ★ ④ 매도 체결 Slack 알림 (보유 현황표 자동 첨부)
@@ -511,11 +515,11 @@ class StockScheduler:
                 if ticker:
                     holding_tickers.add(ticker)
             
-            # buy_ordered/holding 상태인 종목도 중복 매수 방지 (DB 이중 체크)
+            # buy_ordered/holding 상태인 종목도 중복 매수 방지 (DB 이중 체크) — 현재 계좌 모드만
             try:
                 ordered_response = supabase.table("trade_records").select("ticker").in_(
                     "status", ["buy_ordered", "holding", "sell_ordered"]
-                ).execute()
+                ).eq("account_type", current_account_type()).execute()
                 if ordered_response.data:
                     for rec in ordered_response.data:
                         holding_tickers.add(rec["ticker"])
@@ -594,7 +598,7 @@ class StockScheduler:
 
                 if price_result.get("rt_cd") != "0":
                     logger.error(f"{stock_name}({ticker}) 현재가 조회 실패: {price_result.get('msg1', '알 수 없는 오류')}")
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(2)
                     continue
 
                 # 현재가 추출
@@ -604,7 +608,7 @@ class StockScheduler:
                     logger.error(f"{stock_name}({ticker}) 현재가가 유효하지 않습니다: {current_price}")
                     continue
 
-                await asyncio.sleep(1.5)  # KIS API 초당 제한 방지
+                await asyncio.sleep(2)  # KIS API 초당 제한 방지
                 # 매수가능금액 조회 → 종목당 10% 투자
                 try:
                     ps_params = {
@@ -640,8 +644,35 @@ class StockScheduler:
                     logger.error(f"{stock_name}({ticker}) 매수가능금액 조회 오류: {ps_e}")
                     continue
 
-                await asyncio.sleep(1.5)  # KIS API 초당 제한 방지
-                # 매수 주문 실행
+                # ★ ATR 계산을 매수 주문 _전_ 으로 이동 (null 시 매수 차단)
+                #   기존 흐름: 주문 → ATR 계산 → 실패 시 NULL 로 INSERT (위험)
+                #   신규 흐름: ATR 계산 → 실패 시 매수 자체 SKIP (안전)
+                await asyncio.sleep(2)  # KIS API 초당 제한 방지
+                atr_value = None
+                take_profit_price = None
+                stop_loss_price = None
+                try:
+                    vol_result = get_overseas_daily_price(api_exchange_code, pure_ticker, gubn="0")
+                    if vol_result and vol_result.get("rt_cd") == "0":
+                        daily_data = vol_result.get("output2", [])
+                        atr_value = self.recommendation_service.calculate_atr(daily_data)
+                except Exception as atr_e:
+                    logger.error(f"{stock_name}({ticker}) ATR 계산 중 오류: {atr_e}")
+
+                if atr_value is None:
+                    logger.warning(
+                        f"❌ {stock_name}({ticker}) ATR 계산 실패 → 매수 SKIP "
+                        f"(자동 익절/손절 안전장치 없이 매수하지 않음)"
+                    )
+                    await asyncio.sleep(2)
+                    continue
+
+                take_profit_price = round(current_price + atr_value * 2.5, 2)
+                stop_loss_price = round(current_price - atr_value * 1.5, 2)
+                logger.info(f"  ATR={atr_value}, 익절가=${take_profit_price}, 손절가=${stop_loss_price}")
+
+                await asyncio.sleep(2)  # KIS API 초당 제한 방지
+                # 매수 주문 실행 (ATR 안전장치 확보됨)
                 order_data = {
                     "CANO": settings.KIS_CANO,
                     "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
@@ -652,10 +683,10 @@ class StockScheduler:
                     "OVRS_ORD_UNPR": str(current_price),
                     "is_buy": True
                 }
-                
+
                 logger.info(f"{stock_name}({ticker}) 매수 주문 실행: 수량 {quantity}주, 가격 ${current_price}")
                 order_result = order_overseas_stock(order_data)
-                
+
                 if order_result.get("rt_cd") == "0":
                     logger.info(f"{stock_name}({ticker}) 매수 주문 성공: {order_result.get('msg1', '주문이 접수되었습니다.')}")
                     holding_tickers.add(pure_ticker)  # 중복 매수 방지
@@ -672,21 +703,8 @@ class StockScheduler:
                     except Exception as notify_e:
                         logger.warning(f"매수 체결 알림 발송 실패: {notify_e}")
 
-                    # trade_records에 ATR 기반 익절/손절 기준 저장
+                    # trade_records 저장 (ATR/TP/SL 모두 보장됨)
                     try:
-                        atr_value = None
-                        take_profit_price = None
-                        stop_loss_price = None
-
-                        vol_result = get_overseas_daily_price(api_exchange_code, pure_ticker, gubn="0")
-                        if vol_result and vol_result.get("rt_cd") == "0":
-                            daily_data = vol_result.get("output2", [])
-                            atr_value = self.recommendation_service.calculate_atr(daily_data)
-                            if atr_value:
-                                take_profit_price = round(current_price + atr_value * 2.5, 2)
-                                stop_loss_price = round(current_price - atr_value * 1.5, 2)
-                                logger.info(f"  ATR={atr_value}, 익절가=${take_profit_price}, 손절가=${stop_loss_price}")
-
                         supabase.table("trade_records").insert({
                             "ticker": pure_ticker,
                             "stock_name": stock_name,
@@ -700,6 +718,7 @@ class StockScheduler:
                             "stop_loss_price": stop_loss_price,
                             "status": "buy_ordered",
                             "composite_score": candidate.get("composite_score"),
+                            "account_type": current_account_type(),
                         }).execute()
                         logger.info(f"  {stock_name}({pure_ticker}) trade_records 저장 완료 (status: buy_ordered)")
                     except Exception as tr_e:
@@ -707,8 +726,8 @@ class StockScheduler:
                 else:
                     logger.error(f"{stock_name}({ticker}) 매수 주문 실패: {order_result.get('msg1', '알 수 없는 오류')}")
 
-                # 요청 간 지연 (API 요청 제한 방지)
-                await asyncio.sleep(1)
+                # 다음 종목 처리 전 지연
+                await asyncio.sleep(2)
 
             except Exception as e:
                 logger.error(f"{candidate['stock_name']}({candidate['ticker']}) 매수 처리 중 오류: {str(e)}", exc_info=True)

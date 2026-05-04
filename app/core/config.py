@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")
     SLACK_NOTIFY_LEVEL: str = os.getenv("SLACK_NOTIFY_LEVEL", "info")
 
+    # Cross-sectional z-score 점수 시스템 v2 활성화
+    # false: v1 (raw weighted sum) 으로 매수 결정, v2 점수는 로깅만
+    # true:  v2 (z-score) 로 매수 결정
+    # 참조: documents/10_멀티팩터_변별력_개선_기획.md
+    USE_SCORING_V2: bool = os.getenv("USE_SCORING_V2", "false").lower() == "true"
+
     @property
     def kis_base_url(self) -> str:
         """사용할 한국투자증권 API URL 반환"""

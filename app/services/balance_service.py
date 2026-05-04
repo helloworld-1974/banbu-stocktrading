@@ -8,80 +8,100 @@ from app.db.supabase import supabase
 from threading import Lock
 from app.services.auth_service import parse_expiration_date
 
-# 메모리에 토큰 정보 저장 (캐싱)
+# 메모리 토큰 캐시 — mock/real 별도 슬롯
+# (KIS_USE_MOCK 변경 시 캐시 충돌 방지)
 _token_cache = {
-    "access_token": None,
-    "expires_at": None
+    "kis_mock": {"access_token": None, "expires_at": None},
+    "kis_real": {"access_token": None, "expires_at": None},
 }
-_last_refresh_time = 0  # 마지막 토큰 갱신 시간
+_last_refresh_time = {"kis_mock": 0, "kis_real": 0}
 _refresh_lock = Lock()  # 동시성 방지 락
 
+
+def _current_token_type() -> str:
+    """현재 활성 모드의 토큰 타입 반환 (kis_mock 또는 kis_real)"""
+    return "kis_mock" if settings.KIS_USE_MOCK else "kis_real"
+
+
+def current_account_type() -> str:
+    """trade_records.account_type 컬럼용 — 'mock' or 'real'.
+    KIS_USE_MOCK 에 따라 모의/실전 거래 기록 구분."""
+    return "mock" if settings.KIS_USE_MOCK else "real"
+
+
 def get_access_token():
-    """한국투자증권 API 접근 토큰 발급 또는 캐시된 토큰 반환"""
+    """한국투자증권 API 접근 토큰 발급 또는 캐시된 토큰 반환.
+    KIS_USE_MOCK 에 따라 mock/real 토큰을 분리해서 캐시/저장."""
     global _token_cache, _last_refresh_time
-    
-    # 현재 시간
+
+    token_type = _current_token_type()
+    cache = _token_cache[token_type]
     now = datetime.now(pytz.UTC)
-    
-    # 메모리에 캐시된 토큰이 있고 유효하면 그것을 사용
-    if _token_cache["access_token"] and _token_cache["expires_at"] and now < _token_cache["expires_at"]:
-        print("메모리에 캐시된 토큰 사용")
-        return _token_cache["access_token"]
-    
-    # 1분 제한 체크 및 락 획득
+
+    # 메모리 캐시 (해당 모드 슬롯) 가 유효하면 사용
+    if cache["access_token"] and cache["expires_at"] and now < cache["expires_at"]:
+        print(f"메모리 캐시 토큰 사용 ({token_type})")
+        return cache["access_token"]
+
+    # 1분 제한 체크 (모드 별 별도 카운트)
     current_time = time.time()
-    if current_time - _last_refresh_time < 60:
-        time_to_wait = 60 - (current_time - _last_refresh_time)
-        print(f"1분 제한으로 {time_to_wait:.1f}초 대기")
+    last_refresh = _last_refresh_time[token_type]
+    if current_time - last_refresh < 60:
+        time_to_wait = 60 - (current_time - last_refresh)
+        print(f"1분 제한으로 {time_to_wait:.1f}초 대기 ({token_type})")
         time.sleep(time_to_wait)
-    
-    with _refresh_lock:  # 동시성 방지
+
+    with _refresh_lock:
         # 락 획득 후 다시 캐시 확인
-        if _token_cache["access_token"] and _token_cache["expires_at"] and now < _token_cache["expires_at"]:
-            print("락 내에서 캐시된 토큰 사용")
-            return _token_cache["access_token"]
-        
+        if cache["access_token"] and cache["expires_at"] and now < cache["expires_at"]:
+            print(f"락 내에서 캐시 토큰 사용 ({token_type})")
+            return cache["access_token"]
+
         try:
-            # 테이블에서 토큰 레코드 조회
-            response = supabase.table("access_tokens").select("*").order("updated_at", desc=True).limit(1).execute()
-            
+            # DB 에서 해당 모드 토큰만 조회
+            response = supabase.table("access_tokens") \
+                .select("*") \
+                .eq("token_type", token_type) \
+                .order("updated_at", desc=True) \
+                .limit(1).execute()
+
             if response.data:
                 token_data = response.data[0]
-                
-                # 이 부분을 수정 - auth_service의 parse_expiration_date 함수 사용
                 expiration_time = parse_expiration_date(token_data["expires_at"])
-                
-                if now < expiration_time:  # 토큰이 아직 유효한 경우
-                    print(f"기존 토큰 사용 - 만료까지 남은 시간: {(expiration_time - now)}")
-                    _token_cache["access_token"] = token_data["access_token"]
-                    _token_cache["expires_at"] = expiration_time
-                    _last_refresh_time = current_time
-                    return token_data["access_token"]
-                
-                print("토큰 만료됨, 갱신 필요")
-                # 토큰이 만료된 경우 갱신
-                token = refresh_token_with_retry(token_data["id"])
-                _token_cache["access_token"] = token
-                _token_cache["expires_at"] = now + timedelta(days=1)
-                _last_refresh_time = current_time
-                return token
-            else:
-                print("토큰 레코드 없음, 새로 생성")
-                token = refresh_token_with_retry()
-                _token_cache["access_token"] = token
-                _token_cache["expires_at"] = now + timedelta(days=1)
-                _last_refresh_time = current_time
-                return token
-                
-        except Exception as e:
-            print(f"토큰 조회 오류: {str(e)}")
-            if _token_cache["access_token"]:
-                print("DB 조회 오류 - 메모리에 캐시된 토큰 사용")
-                return _token_cache["access_token"]
-            raise Exception(f"토큰 발급 실패: {str(e)}")
 
-def refresh_token_with_retry(record_id=None, max_retries=3):
-    """토큰 갱신을 재시도하며 처리"""
+                if now < expiration_time:
+                    print(f"DB 기존 토큰 사용 ({token_type}) - 만료까지: {(expiration_time - now)}")
+                    cache["access_token"] = token_data["access_token"]
+                    cache["expires_at"] = expiration_time
+                    _last_refresh_time[token_type] = current_time
+                    return token_data["access_token"]
+
+                print(f"토큰 만료됨, 갱신 필요 ({token_type})")
+                token = refresh_token_with_retry(token_type=token_type, record_id=token_data["id"])
+            else:
+                print(f"토큰 레코드 없음 ({token_type}), 새로 생성")
+                token = refresh_token_with_retry(token_type=token_type)
+
+            cache["access_token"] = token
+            cache["expires_at"] = now + timedelta(days=1)
+            _last_refresh_time[token_type] = current_time
+            return token
+
+        except Exception as e:
+            print(f"토큰 조회 오류 ({token_type}): {str(e)}")
+            if cache["access_token"]:
+                print(f"DB 조회 오류 - 메모리 캐시 토큰 사용 ({token_type})")
+                return cache["access_token"]
+            raise Exception(f"토큰 발급 실패 ({token_type}): {str(e)}")
+
+
+def refresh_token_with_retry(token_type: str = None, record_id=None, max_retries=3):
+    """토큰 갱신을 재시도하며 처리.
+    token_type: 'kis_mock' 또는 'kis_real' (생략 시 현재 활성 모드)
+    """
+    if token_type is None:
+        token_type = _current_token_type()
+
     for attempt in range(max_retries):
         try:
             url = f"{settings.kis_base_url}/oauth2/tokenP"
@@ -90,38 +110,38 @@ def refresh_token_with_retry(record_id=None, max_retries=3):
                 "appkey": settings.KIS_APPKEY,
                 "appsecret": settings.KIS_APPSECRET
             }
-            
+
             response = requests.post(url, json=data)
             response_data = response.json()
-            
+
             if 'access_token' not in response_data:
                 raise Exception(f"토큰 발급 실패: {response_data}")
-            
+
             access_token = response_data["access_token"]
-            expires_in = response_data.get("expires_in", 86400)  # 기본값 24시간(초)
+            expires_in = response_data.get("expires_in", 86400)
             now = datetime.now(pytz.UTC)
             expiration_time = now + timedelta(seconds=expires_in)
-            
+
             token_data = {
+                "token_type": token_type,
                 "access_token": access_token,
                 "expires_at": expiration_time.isoformat(),
             }
-            
-            # 레코드 ID가 있으면 업데이트, 없으면 새로 생성
+
             if record_id:
                 supabase.table("access_tokens").update(token_data).eq("id", record_id).execute()
-                print("토큰 업데이트 완료")
+                print(f"토큰 업데이트 완료 ({token_type})")
             else:
                 supabase.table("access_tokens").insert(token_data).execute()
-                print("새 토큰 레코드 생성 완료")
-            
+                print(f"새 토큰 레코드 생성 완료 ({token_type})")
+
             return access_token
-            
+
         except Exception as e:
-            print(f"토큰 갱신 오류 (시도 {attempt+1}/{max_retries}): {str(e)}")
+            print(f"토큰 갱신 오류 ({token_type}, 시도 {attempt+1}/{max_retries}): {str(e)}")
             if "EGW00133" in str(e) and attempt < max_retries - 1:
-                print("1분 제한 에러 발생, 61초 대기 후 재시도")
-                time.sleep(61)  # 1분 이상 대기
+                print("1분 제한 에러, 61초 대기 후 재시도")
+                time.sleep(61)
             else:
                 raise
 
@@ -198,7 +218,7 @@ def get_overseas_balance(ovrs_excg_cd="NASD"):
         "authorization": f"Bearer {access_token}",
         "appkey": settings.KIS_APPKEY,
         "appsecret": settings.KIS_APPSECRET,
-        "tr_id": "VTTS3012R"  # 해외주식 잔고 조회 TR ID
+        "tr_id": "VTTS3012R" if settings.KIS_USE_MOCK else "TTTS3012R",  # 해외주식 잔고 조회
     }
     
     params = {
@@ -287,7 +307,7 @@ def overseas_order_resv(order_data):
         url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/order-resv"
         
         # 모의투자 여부 확인
-        is_virtual = "openapivts" in settings.kis_base_url
+        is_virtual = settings.KIS_USE_MOCK
         
         # 매수/매도 여부 및 거래소에 따라 TR_ID 결정
         is_buy = order_data.get("is_buy", True)
@@ -401,7 +421,7 @@ def get_overseas_nccs(params):
         access_token = get_access_token()
         
         # 모의투자에서는 직접 API가 지원되지 않으므로 주문체결내역 API로 대체
-        if "openapivts" in settings.kis_base_url:
+        if settings.KIS_USE_MOCK:
             # 모의투자 환경에서는 주문체결내역 API 사용
             url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-order"
             tr_id = "VTTS3035R"  # 모의투자 주문체결내역 TR_ID
@@ -409,7 +429,7 @@ def get_overseas_nccs(params):
             # 실전투자 환경에서는 미체결내역 API 사용
             url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-nccs"
             tr_id = "TTTS3018R"  # 실전투자 미체결내역 TR_ID
-            
+
         headers = {
             "Content-Type": "application/json; charset=utf-8",
             "authorization": f"Bearer {access_token}",
@@ -417,12 +437,12 @@ def get_overseas_nccs(params):
             "appsecret": settings.KIS_APPSECRET,
             "tr_id": tr_id,
         }
-        
+
         response = requests.get(url, headers=headers, params=params)
         result = response.json()
-        
+
         # 모의투자에서는 nccs_qty(미체결수량)가 0보다 큰 항목만 필터링
-        if "openapivts" in settings.kis_base_url and 'output' in result and isinstance(result['output'], list):
+        if settings.KIS_USE_MOCK and 'output' in result and isinstance(result['output'], list):
             result['output'] = [item for item in result['output'] if int(item.get('nccs_qty', 0)) > 0]
         
         return result
@@ -436,9 +456,8 @@ def get_overseas_order_detail(params):
         access_token = get_access_token()
         
         # API 엔드포인트 및 TR_ID 확인
-        # v1 대신 v1.0 사용 시도 
         url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-order"
-        tr_id = "VTTS3035R"  # 모의투자 TR_ID
+        tr_id = "VTTS3035R" if settings.KIS_USE_MOCK else "TTTS3035R"
         
         headers = {
             "Content-Type": "application/json; charset=utf-8",
@@ -504,7 +523,7 @@ def get_overseas_order_resv_list(params):
     """해외주식 예약주문 조회"""
     try:
         # 모의투자 환경 확인
-        is_virtual = "openapivts" in settings.kis_base_url
+        is_virtual = settings.KIS_USE_MOCK
         
         if is_virtual:
             # 모의투자에서는 지원되지 않으므로 안내 메시지 반환
@@ -593,7 +612,7 @@ def order_overseas_stock(order_data):
             order_data["ACNT_PRDT_CD"] = settings.KIS_ACNT_PRDT_CD
             
         # 모의투자 여부 확인
-        is_virtual = "openapivts" in settings.kis_base_url
+        is_virtual = settings.KIS_USE_MOCK
         
         # 매수/매도 여부 확인
         is_buy = order_data.get("is_buy", True)

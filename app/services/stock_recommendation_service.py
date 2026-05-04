@@ -5,8 +5,9 @@ from datetime import datetime, timedelta
 from app.db.supabase import supabase
 import numpy as np
 from app.core.config import settings
-from app.services.balance_service import get_overseas_balance, get_all_overseas_balances
+from app.services.balance_service import get_overseas_balance, get_all_overseas_balances, current_account_type
 from app.services.volume_service import get_overseas_daily_price
+from app.services.scoring_service import score_and_filter
 
 # 한국어 주식명과 티커 심볼 매핑
 STOCK_TO_TICKER = {
@@ -669,115 +670,21 @@ class StockRecommendationService:
                 print(f"  VIX {vix_value:.1f} > 35: 공포장 매수 중단")
                 return {"message": f"VIX {vix_value:.1f} - 공포장으로 매수를 중단합니다", "results": []}
 
-            # 7. 매수 후보 필터링 + 종합 점수 계산
-            final_results = []
-            for item in results:
-                # RSI > 80 하드블록: 과매수 구간은 무조건 제외
-                rsi = item["rsi"]
-                if rsi > 80:
-                    print(f"  {item['stock_name']}({item['ticker']}) RSI {rsi:.1f} > 80 과매수 제외")
-                    continue
+            # 7. 점수 산출 + 필터링 + 정렬 (v1 또는 v2, USE_SCORING_V2 에 따라)
+            #    실제 점수 로직은 app/services/scoring_service.py 에 모듈화됨
+            final_results = score_and_filter(
+                candidates=results,
+                vix_value=vix_value,
+                use_v2=settings.USE_SCORING_V2,
+            )
 
-                raw_sentiment = item["sentiment_score"] if item["sentiment_score"] is not None else 0.0
-                # 감성점수 정규화: [-1, 1] → [0, 1] (다른 점수와 범위 통일)
-                sentiment_score = (raw_sentiment + 1) / 2
-                # RSI 매수 적합성 판단
-                # < 30: 과매도 반등 (강한 매수 신호)
-                # 30~65: 정상 매수 구간
-                # > 65: 과열 진입 (매수 부적합)
-                # > 80: 하드블록 (위에서 이미 제외)
-                rsi_buy = rsi <= 65
+            version = "v2 (z-score)" if settings.USE_SCORING_V2 else "v1 (raw)"
+            print(f"  점수 모드: {version}, 통과 종목: {len(final_results)}개")
+            for c in final_results:
+                print(f"  {c['stock_name']}({c['ticker']}) score={c['composite_score']:+.4f}")
 
-                tech_conditions = [item["golden_cross"], rsi_buy, item["macd_buy_signal"]]
-
-                # 기술적 신호 2개 이상이면 매수 후보
-                if sum(tech_conditions) < 2:
-                    continue
-
-                # --- 정규화된 점수 계산 (모든 항목 0~1 또는 -1~1 범위) ---
-
-                # 상승확률 점수 (0~1 정규화)
-                rp = item["rise_probability"]
-                if rp < 3:
-                    rise_score = 0.2
-                elif rp < 5:
-                    rise_score = 0.4
-                elif rp < 8:
-                    rise_score = 0.6
-                elif rp < 12:
-                    rise_score = 0.8
-                else:
-                    rise_score = 1.0
-
-                # 기술적 점수 (0~1 정규화, max 3.5)
-                tech_conditions_count = (
-                    1.5 * item["golden_cross"] +
-                    1.0 * rsi_buy +
-                    1.0 * item["macd_buy_signal"]
-                )
-                tech_score = tech_conditions_count / 3.5
-
-                # 거래량 점수 (-0.5~0.6)
-                vr = item.get("volume_ratio")
-                if vr is None:
-                    volume_score = 0.0
-                elif vr < 0.5:
-                    volume_score = -0.5
-                elif vr < 1.0:
-                    volume_score = 0.0
-                elif vr < 1.5:
-                    volume_score = 0.3
-                else:
-                    volume_score = 0.6
-
-                # ADX 점수 (-0.3~0.4)
-                adx = item.get("adx")
-                if adx is None:
-                    adx_score = 0.0
-                elif adx > 25:
-                    adx_score = 0.4
-                elif adx >= 20:
-                    adx_score = 0.0
-                else:
-                    adx_score = -0.3
-
-                # VIX 점수 (-0.5~0)
-                if vix_value is None:
-                    vix_score = 0.0
-                elif vix_value < 20:
-                    vix_score = 0.0
-                elif vix_value < 30:
-                    vix_score = -0.2
-                else:
-                    vix_score = -0.5
-
-                # 종합 점수 (정규화된 가중합)
-                composite_score = (
-                    0.25 * rise_score +
-                    0.25 * tech_score +
-                    0.20 * sentiment_score +
-                    0.15 * volume_score +
-                    0.10 * adx_score +
-                    0.05 * vix_score
-                )
-
-                item["rise_score"] = round(rise_score, 2)
-                item["tech_score"] = round(tech_score, 2)
-                item["volume_score"] = round(volume_score, 2)
-                item["adx_score"] = round(adx_score, 2)
-                item["vix_score"] = round(vix_score, 2)
-                item["vix_value"] = vix_value
-                item["composite_score"] = round(composite_score, 4)
-
-                # 하한선: composite_score 0.3 미만이면 매수 안 함
-                if composite_score >= 0.3:
-                    final_results.append(item)
-
-            final_results.sort(key=lambda x: x["composite_score"], reverse=True)
-
-            # 8. 결과 반환
             return {
-                "message": f"{len(final_results)}개의 매수 추천 주식을 찾았습니다",
+                "message": f"{len(final_results)}개의 매수 추천 주식을 찾았습니다 ({version})",
                 "results": final_results
             }
         
@@ -863,7 +770,7 @@ class StockRecommendationService:
             # 6. trade_records에서 ATR 기반 익절/손절 기준 조회
             trade_records_map = {}
             try:
-                tr_response = supabase.table("trade_records").select("*").eq("status", "holding").execute()
+                tr_response = supabase.table("trade_records").select("*").eq("status", "holding").eq("account_type", current_account_type()).execute()
                 if tr_response.data:
                     for tr in tr_response.data:
                         trade_records_map[tr["ticker"]] = tr

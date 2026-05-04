@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS ticker_sentiment_analysis (
 );
 
 
--- 6. trade_records: 매매 기록
+-- 6. trade_records: 매매 기록 (모의/실전 구분용 account_type 포함)
 CREATE TABLE IF NOT EXISTS trade_records (
     id BIGSERIAL PRIMARY KEY,
     ticker TEXT NOT NULL,
@@ -189,11 +189,14 @@ CREATE TABLE IF NOT EXISTS trade_records (
     profit_loss_pct FLOAT8,
     composite_score FLOAT8,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    holding_quantity INTEGER DEFAULT 0
+    holding_quantity INTEGER DEFAULT 0,
+    account_type TEXT NOT NULL DEFAULT 'mock'  -- 'mock' or 'real' (KIS_USE_MOCK 기반)
 );
 
 CREATE INDEX IF NOT EXISTS idx_trade_records_status ON trade_records (status);
 CREATE INDEX IF NOT EXISTS idx_trade_records_ticker ON trade_records (ticker);
+CREATE INDEX IF NOT EXISTS idx_trade_records_account_type ON trade_records (account_type);
+CREATE INDEX IF NOT EXISTS idx_trade_records_account_status ON trade_records (account_type, status);
 
 
 -- 7. llm_decision_logs: LLM 매수 판단 기록
