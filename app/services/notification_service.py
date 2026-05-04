@@ -1,11 +1,15 @@
 """
-Slack Incoming Webhook 통합 — 4가지 핵심 알림 + 보유 현황표.
+Slack Incoming Webhook 통합 — 6가지 알림 + 보유 현황표.
 
-알림 종류:
+정상 알림 4종:
   1. notify_data_ready()           — 데이터 수집 완료 (Step 1~3)
   2. notify_llm_decisions()        — 오늘 매수/홀드 결정 종목
   3. notify_buy_executed()         — 매수 체결 (보유 현황표 첨부)
   4. notify_sell_executed()        — 매도 체결 (보유 현황표 첨부)
+
+장애 알림 2종:
+  5. notify_pipeline_failure()     — 일일 파이프라인 실패 (Step 1~4 중 어디서)
+  6. notify_llm_failure()          — LLM 검토 전체 실패 (Fail-Close 매수 차단)
 
 SLACK_WEBHOOK_URL 미설정 시 모든 함수가 no-op (안전).
 
@@ -258,4 +262,71 @@ def notify_sell_executed(
             f"*📊 매도 후 현재 보유 종목 + 수익률*\n{holdings_table}"
         ),
         color=color,
+    )
+
+
+# ──────────────────────────────────────────────────────────
+# ⑤ 일일 파이프라인 실패
+# ──────────────────────────────────────────────────────────
+
+def notify_pipeline_failure(
+    failed_step: str,
+    step_name: str,
+    error: str,
+    completed_steps: Optional[Dict[str, dict]] = None,
+):
+    """
+    일일 파이프라인 (Step 1~4) 실패 알림.
+
+    Args:
+        failed_step: 실패 단계 키 (예: "2_kaggle_ml")
+        step_name: 실패 단계 한글명 (예: "Kaggle ML 예측")
+        error: 실패 사유 (Exception message)
+        completed_steps: 이미 성공한 단계들 dict (Optional)
+    """
+    fields = {"❌ 실패 단계": f"{step_name}\n({failed_step})"}
+    if completed_steps:
+        for k, v in completed_steps.items():
+            elapsed = v.get("elapsed_sec", "?")
+            sn = v.get("step_name", k)
+            fields[f"✅ {sn}"] = f"{elapsed}초"
+
+    _send(
+        title=f"❌ Pipeline 실패 — {step_name}",
+        message=(
+            f"일일 자동매매 파이프라인이 *{step_name}* 단계에서 실패했습니다.\n"
+            f"이번 사이클의 매수는 진행되지 않습니다.\n\n"
+            f"*에러:*\n```{(error or '')[:500]}```"
+        ),
+        color="#ff0000",
+        fields=fields,
+    )
+
+
+# ──────────────────────────────────────────────────────────
+# ⑥ LLM 검토 전체 실패 (Fail-Close 매수 차단)
+# ──────────────────────────────────────────────────────────
+
+def notify_llm_failure(reason: str, candidate_count: int = 0):
+    """
+    LLM 검토 (Claude API) 전체 실패 알림. Opus + Sonnet 폴백 포함 모두 실패 시.
+
+    Fail-Close 정책상 매수가 차단되므로 즉시 알림 필수.
+
+    Args:
+        reason: 실패 사유 (마지막 에러 메시지 등)
+        candidate_count: 검토 시도한 후보 종목 수
+    """
+    _send(
+        title="❌ LLM 검토 실패 — 매수 차단",
+        message=(
+            f"Claude API 호출이 전체 실패했습니다 (Opus 3회 + Sonnet 3회).\n"
+            f"Fail-Close 안전 정책으로 *오늘 매수 진행 안 함*.\n\n"
+            f"검토 시도 후보: *{candidate_count}개*\n\n"
+            f"*에러:*\n```{(reason or '')[:500]}```"
+        ),
+        color="#ff0000",
+        fields={
+            "조치 권장": "Anthropic API 키 / 잔액 / 서비스 상태 확인",
+        },
     )

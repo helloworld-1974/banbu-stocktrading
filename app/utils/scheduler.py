@@ -21,6 +21,7 @@ from app.services.notification_service import (
     notify_llm_decisions,
     notify_buy_executed,
     notify_sell_executed,
+    notify_pipeline_failure,
 )
 
 # 로깅 설정
@@ -866,6 +867,17 @@ async def _execute_daily_pipeline() -> dict:
     completed_steps: dict = {}
 
     def _fail(step_key: str, step_name: str, error: str) -> dict:
+        # Slack 장애 알림 (실패 시 즉시 발송, 다음 날까지 모르는 상황 방지)
+        try:
+            notify_pipeline_failure(
+                failed_step=step_key,
+                step_name=step_name,
+                error=error,
+                completed_steps=completed_steps,
+            )
+        except Exception as notify_e:
+            pipeline_logger.warning(f"Pipeline 실패 알림 발송 실패: {notify_e}")
+
         return {
             "success": False,
             "failed_step": step_key,

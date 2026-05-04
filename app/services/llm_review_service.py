@@ -4,6 +4,7 @@ from datetime import datetime
 import anthropic
 from app.core.config import settings
 from app.db.supabase import supabase
+from app.services.notification_service import notify_llm_failure
 
 # 재시도 설정
 MAX_RETRIES = 3
@@ -58,7 +59,13 @@ def review_buy_candidates(candidates: list, vix_value: float = None) -> dict:
         }
     """
     if not settings.ANTHROPIC_API_KEY:
-        print("  ANTHROPIC_API_KEY가 설정되지 않았습니다. LLM 검토 불가로 매수 차단.")
+        msg = "ANTHROPIC_API_KEY가 설정되지 않았습니다. LLM 검토 불가로 매수 차단."
+        print(f"  {msg}")
+        # Slack 즉시 알림 (놓치면 매일 매수 차단됨)
+        try:
+            notify_llm_failure(reason=msg, candidate_count=len(candidates))
+        except Exception as notify_e:
+            print(f"  LLM 실패 알림 발송 실패: {notify_e}")
         return {
             "reviewed_candidates": [],
             "held_candidates": candidates,
@@ -248,6 +255,12 @@ def review_buy_candidates(candidates: list, vix_value: float = None) -> dict:
     # 실패 시에도 로그 저장 (사유 기록)
     fail_decision_map = {c["ticker"]: {"decision": "FAIL", "reason": fail_reason} for c in candidates}
     _save_llm_decision_logs(candidates, fail_decision_map, fail_reason, vix_value)
+
+    # Slack 장애 알림 (Fail-Close 매수 차단)
+    try:
+        notify_llm_failure(reason=fail_reason, candidate_count=len(candidates))
+    except Exception as notify_e:
+        print(f"  LLM 실패 알림 발송 실패: {notify_e}")
 
     return {
         "reviewed_candidates": [],
