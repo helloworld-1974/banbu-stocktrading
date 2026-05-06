@@ -173,7 +173,7 @@ V2_W_ADX = 0.20  # 추세 강도: trend persistence 학술 근거 강함
 V2_W_SENT = 0.10  # 감성: 학술 IC 약함 (0.01~0.03)
 
 WINSOR_LIMIT = 3.0  # ±3σ 클립
-V2_BASE_THRESHOLD = 0.5
+V2_BASE_THRESHOLD = 0.4
 
 
 def cross_sectional_zscore(values: List[Optional[float]]) -> List[float]:

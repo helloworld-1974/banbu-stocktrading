@@ -1,6 +1,7 @@
 import pandas as pd
 import requests
 import time
+import pytz
 from datetime import datetime, timedelta
 from app.db.supabase import supabase
 import numpy as np
@@ -294,14 +295,21 @@ class StockRecommendationService:
                                     pass
                         print(f"  {ticker} 거래일 필터: {len(raw_daily_data)}일 → {len(daily_data)}일 (주말/비거래일 제외)")
                         # 거래량 비율 (최근 완료된 거래일 기준 5일 평균 대비)
-                        # 미장 개장 전/시간외 거래는 정규 거래량 대비 극히 적으므로,
-                        # 첫 번째 거래일 거래량이 두 번째 대비 1% 미만이면 미완료 거래일로 간주하고 건너뜀
+                        # ─── 1차 가드: 날짜 기반 미완료 거래일 필터 ───
+                        # 첫 행 xymd가 NY 기준 오늘이고 장 마감(16:30 ET) 전이면 미완료 데이터 → 제외
+                        now_ny = datetime.now(pytz.timezone('America/New_York'))
+                        today_ny_str = now_ny.strftime("%Y%m%d")
+                        is_market_closed = (now_ny.hour > 16) or (now_ny.hour == 16 and now_ny.minute >= 30)
+                        if len(daily_data) >= 2 and not is_market_closed:
+                            if daily_data[0].get("xymd", "") == today_ny_str:
+                                print(f"  {ticker} 오늘({today_ny_str}) 데이터는 장 마감 전 미완료 → 제외 (NY={now_ny.strftime('%H:%M')})")
+                                daily_data = daily_data[1:]
+                        # ─── 2차 가드: 거래량 비율 10% 미만이면 미완료로 간주 (백업) ───
                         if len(daily_data) >= 7:
                             first_vol = int(daily_data[0].get("tvol", "0") or "0")
                             second_vol = int(daily_data[1].get("tvol", "0") or "0")
-                            if second_vol > 0 and first_vol < second_vol * 0.01:
-                                # 오늘 데이터는 미완료(프리마켓/시간외) → 건너뜀
-                                print(f"  {ticker} 오늘({daily_data[0].get('xymd')}) 거래량 {first_vol:,}은 프리마켓/시간외 → 직전 거래일 기준으로 계산")
+                            if second_vol > 0 and first_vol < second_vol * 0.10:
+                                print(f"  {ticker} 오늘({daily_data[0].get('xymd')}) 거래량 {first_vol:,}이 직전일 {second_vol:,}의 10% 미만 → 미완료로 간주, 직전 거래일 기준으로 계산")
                                 daily_data = daily_data[1:]
                         if len(daily_data) >= 6:
                             today_vol = int(daily_data[0].get("tvol", "0") or "0")

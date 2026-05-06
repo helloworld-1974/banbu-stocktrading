@@ -386,10 +386,13 @@ class StockScheduler:
                         continue
                     
                     current_price = float(last_price)
-                    
+
                     if current_price <= 0:
                         logger.error(f"{stock_name}({ticker}) 현재가가 유효하지 않습니다: {current_price}")
                         continue
+
+                    # KIS 미국 주식 호가 단위 맞춤 (★ 패치: $1 이상은 소수점 2자리만 허용)
+                    current_price = round(current_price, 2 if current_price >= 1.0 else 4)
                 except ValueError as ve:
                     logger.error(f"{stock_name}({ticker}) 현재가 변환 오류: {str(ve)}, 값: '{last_price}'")
                     continue
@@ -495,7 +498,8 @@ class StockScheduler:
         logger.info(
             f"자동 매수 작업 시작 (force={force}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})"
         )
-        self._last_buy_date = ny_date
+        # ★ 패치: _last_buy_date 는 실제 매수가 1건이라도 성공한 후 갱신 (이전엔 시도 전 갱신 → 실패해도 그날 재시도 차단)
+        any_buy_succeeded = False
 
         now_in_korea = datetime.now(pytz.timezone('Asia/Seoul'))
         logger.info(f"매수 시간 확인: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})")
@@ -537,12 +541,21 @@ class StockScheduler:
         
         if not recommendations or not recommendations.get("results"):
             logger.info("매수 대상 종목이 없습니다.")
+            # ★ 후보 0건이어도 운영 가시성을 위한 Slack 알림 (LLM 호출은 스킵)
+            try:
+                notify_llm_decisions(buy_candidates=[], held_candidates=[], market_analysis="")
+            except Exception as notify_e:
+                logger.warning(f"LLM '후보 없음' 알림 발송 실패: {notify_e}")
             return
-        
+
         buy_candidates = recommendations.get("results", [])
 
         if not buy_candidates:
             logger.info("매수 조건을 만족하는 종목이 없습니다.")
+            try:
+                notify_llm_decisions(buy_candidates=[], held_candidates=[], market_analysis="")
+            except Exception as notify_e:
+                logger.warning(f"LLM '후보 없음' 알림 발송 실패: {notify_e}")
             return
 
         logger.info(f"매수 후보 {len(buy_candidates)}개 → LLM 최종 검토 시작")
@@ -608,6 +621,10 @@ class StockScheduler:
                 if current_price <= 0:
                     logger.error(f"{stock_name}({ticker}) 현재가가 유효하지 않습니다: {current_price}")
                     continue
+
+                # KIS 미국 주식 호가 단위 맞춤 (★ 패치: $1 이상은 소수점 2자리만 허용)
+                # 이전: $390.8506 같은 4자리 가격이 KIS에 거부당함
+                current_price = round(current_price, 2 if current_price >= 1.0 else 4)
 
                 await asyncio.sleep(2)  # KIS API 초당 제한 방지
                 # 매수가능금액 조회 → 종목당 10% 투자
@@ -691,6 +708,7 @@ class StockScheduler:
                 if order_result.get("rt_cd") == "0":
                     logger.info(f"{stock_name}({ticker}) 매수 주문 성공: {order_result.get('msg1', '주문이 접수되었습니다.')}")
                     holding_tickers.add(pure_ticker)  # 중복 매수 방지
+                    any_buy_succeeded = True  # ★ 패치: 매수 1건 이상 성공 시 _last_buy_date 갱신
 
                     # ★ ③ 매수 체결 Slack 알림 (보유 현황표 자동 첨부)
                     try:
@@ -733,7 +751,12 @@ class StockScheduler:
             except Exception as e:
                 logger.error(f"{candidate['stock_name']}({candidate['ticker']}) 매수 처리 중 오류: {str(e)}", exc_info=True)
 
-        logger.info("자동 매수 처리가 완료되었습니다.")
+        # ★ 패치: 매수 1건 이상 성공한 경우에만 today로 마킹 (실패한 날은 재시도 가능)
+        if any_buy_succeeded:
+            self._last_buy_date = ny_date
+            logger.info(f"자동 매수 처리가 완료되었습니다. (성공: 있음 → _last_buy_date={ny_date})")
+        else:
+            logger.info("자동 매수 처리가 완료되었습니다. (성공 매수 없음 → _last_buy_date 갱신 안 함, 추후 재시도 가능)")
 
 # 싱글톤 인스턴스 생성
 stock_scheduler = StockScheduler()
@@ -762,12 +785,31 @@ def get_scheduler_status():
     }
 
 def run_auto_buy_now():
-    """즉시 매수 실행 함수 (테스트용)"""
-    stock_scheduler._run_auto_buy()
-    
+    """즉시 매수 실행 (force=True, FastAPI async 환경에서도 안전하게 별도 스레드)
+
+    FastAPI 라우트는 이미 event loop 안에서 동작하므로 asyncio.run() 직접 호출 시
+    'cannot be called from a running event loop' 에러 발생.
+    별도 스레드를 띄워 그 안에서 새 event loop 으로 실행한다.
+    """
+    import threading
+    def _runner():
+        try:
+            asyncio.run(stock_scheduler._execute_auto_buy(force=True))
+        except Exception as e:
+            logger.error(f"수동 매수 실행 중 오류: {str(e)}", exc_info=True)
+    threading.Thread(target=_runner, daemon=True).start()
+    return True
+
 def run_auto_sell_now():
-    """즉시 매도 실행 함수 (테스트용)"""
-    stock_scheduler._run_auto_sell()
+    """즉시 매도 실행 (FastAPI async 환경에서도 안전하게 별도 스레드)"""
+    import threading
+    def _runner():
+        try:
+            asyncio.run(stock_scheduler._execute_auto_sell())
+        except Exception as e:
+            logger.error(f"수동 매도 실행 중 오류: {str(e)}", exc_info=True)
+    threading.Thread(target=_runner, daemon=True).start()
+    return True
 
 # 경제 데이터 스케줄러 관련 변수 및 함수
 economic_data_scheduler_running = False
