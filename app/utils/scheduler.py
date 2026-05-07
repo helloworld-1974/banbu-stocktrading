@@ -19,8 +19,10 @@ from app.services.ml_trigger_service import trigger_and_wait
 from app.services.notification_service import (
     notify_data_ready,
     notify_llm_decisions,
-    notify_buy_executed,
-    notify_sell_executed,
+    notify_buy_ordered,
+    notify_buy_filled,
+    notify_sell_ordered,
+    notify_sell_filled,
     notify_pipeline_failure,
 )
 
@@ -211,6 +213,21 @@ class StockScheduler:
                             logger.info(f"  {ticker} 부분 체결 → holding (주문: {record.get('quantity')}주, 체결: {kis_qty}주)")
                         else:
                             logger.info(f"  {ticker} 매수 체결 확인 → holding ({kis_qty}주)")
+                        # ★ 실제 매수 체결 Slack 알림 (자동 청산 라인 + 계좌 요약 + 오늘 통계)
+                        try:
+                            kis_item = kis_holdings.get(ticker, {}).get("item", {})
+                            fill_price = float(kis_item.get("pchs_avg_pric", 0) or record.get("buy_price") or 0)
+                            notify_buy_filled(
+                                ticker=ticker,
+                                stock_name=record.get("stock_name", ticker),
+                                qty=kis_qty,
+                                fill_price=fill_price,
+                                take_profit_price=record.get("take_profit_price"),
+                                stop_loss_price=record.get("stop_loss_price"),
+                                composite_score=record.get("composite_score"),
+                            )
+                        except Exception as notify_e:
+                            logger.warning(f"  {ticker} 매수 체결 알림 발송 실패: {notify_e}")
                     elif is_after_market_close:
                         # 장 마감 후 미보유 → 미체결 (Day Order 자동 취소)
                         supabase.table("trade_records").update({"status": "buy_failed"}).eq("id", record_id).execute()
@@ -233,6 +250,26 @@ class StockScheduler:
                             "holding_quantity": 0,
                         }).eq("id", record_id).execute()
                         logger.info(f"  {ticker} 매도 체결 확인 → sold")
+                        # ★ 실제 매도 체결 Slack 알림 (이번 거래 + 보유기간 + 오늘 통계 + 계좌 요약)
+                        try:
+                            sold_qty = record.get("quantity") or record.get("holding_quantity") or 0
+                            fill_price = float(record.get("sell_price") or 0)
+                            sell_reason = record.get("sell_reason") or "?"
+                            profit_loss = float(record.get("profit_loss") or 0)
+                            profit_loss_pct = float(record.get("profit_loss_pct") or 0)
+                            notify_sell_filled(
+                                ticker=ticker,
+                                stock_name=record.get("stock_name", ticker),
+                                qty=sold_qty,
+                                fill_price=fill_price,
+                                sell_reason=sell_reason,
+                                profit_loss=profit_loss,
+                                profit_loss_pct=profit_loss_pct,
+                                buy_price=record.get("buy_price"),
+                                buy_date=record.get("buy_date"),
+                            )
+                        except Exception as notify_e:
+                            logger.warning(f"  {ticker} 매도 체결 알림 발송 실패: {notify_e}")
                     elif is_after_market_close:
                         prev_holding = record.get("holding_quantity") or record.get("quantity", 0)
                         if kis_qty < prev_holding:
@@ -443,19 +480,17 @@ class StockScheduler:
                         }).eq("ticker", ticker).eq("status", "holding").eq("account_type", current_account_type()).execute()
                         logger.info(f"  {stock_name}({ticker}) trade_records 매도 주문 접수 (사유: {sell_reason}, 예상손익: {profit_loss_pct:.2f}%)" if profit_loss_pct else f"  {stock_name}({ticker}) trade_records 매도 주문 접수 (사유: {sell_reason})")
 
-                        # ★ ④ 매도 체결 Slack 알림 (보유 현황표 자동 첨부)
+                        # ★ ④ 매도 주문 접수 Slack 알림 (실제 체결은 _reconcile_orders 에서 별도 발송)
                         try:
-                            notify_sell_executed(
+                            notify_sell_ordered(
                                 ticker=ticker,
                                 stock_name=stock_name,
                                 qty=quantity,
                                 price=current_price,
                                 sell_reason=sell_reason,
-                                profit_loss=round(profit_loss, 2) if profit_loss is not None else 0,
-                                profit_loss_pct=round(profit_loss_pct, 2) if profit_loss_pct is not None else 0,
                             )
                         except Exception as notify_e:
-                            logger.warning(f"매도 체결 알림 발송 실패: {notify_e}")
+                            logger.warning(f"매도 주문 접수 알림 발송 실패: {notify_e}")
                     except Exception as tr_e:
                         logger.error(f"  {stock_name}({ticker}) trade_records 업데이트 실패: {tr_e}")
                 else:
@@ -710,9 +745,9 @@ class StockScheduler:
                     holding_tickers.add(pure_ticker)  # 중복 매수 방지
                     any_buy_succeeded = True  # ★ 패치: 매수 1건 이상 성공 시 _last_buy_date 갱신
 
-                    # ★ ③ 매수 체결 Slack 알림 (보유 현황표 자동 첨부)
+                    # ★ ③ 매수 주문 접수 Slack 알림 (실제 체결은 _reconcile_orders 에서 별도 발송)
                     try:
-                        notify_buy_executed(
+                        notify_buy_ordered(
                             ticker=pure_ticker,
                             stock_name=stock_name,
                             qty=quantity,
@@ -720,7 +755,7 @@ class StockScheduler:
                             composite_score=candidate.get("composite_score", 0),
                         )
                     except Exception as notify_e:
-                        logger.warning(f"매수 체결 알림 발송 실패: {notify_e}")
+                        logger.warning(f"매수 주문 접수 알림 발송 실패: {notify_e}")
 
                     # trade_records 저장 (ATR/TP/SL 모두 보장됨)
                     try:

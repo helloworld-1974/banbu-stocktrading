@@ -212,57 +212,258 @@ def notify_llm_decisions(
 # ③ 매수 체결
 # ──────────────────────────────────────────────────────────
 
-def notify_buy_executed(
+def notify_buy_ordered(
     ticker: str,
     stock_name: str,
     qty: int,
     price: float,
     composite_score: float,
 ):
-    """매수 주문 성공 직후 호출. 보유 현황표 자동 첨부."""
-    holdings_table = format_holdings_table()
+    """매수 주문 접수 직후 호출 (실 체결 X, KIS에 주문 전송 성공만 의미)."""
     _send(
-        title=f"🛒 매수 체결: {stock_name} ({ticker})",
+        title=f"📋 매수 주문 접수: {stock_name} ({ticker})",
         message=(
-            f"*수량:* {qty}주  *체결가:* ${price:.2f}  "
-            f"*총액:* ${qty * price:,.2f}\n"
-            f"*composite_score:* {composite_score:.4f}\n\n"
-            f"*📊 현재 보유 종목 + 수익률*\n{holdings_table}"
+            f"*수량:* {qty}주  *주문가(지정가):* ${price:.2f}  "
+            f"*예상총액:* ${qty * price:,.2f}\n"
+            f"*composite_score:* {composite_score:.4f}\n"
+            f"_⏳ 거래소 체결은 정규 시간(NY 09:30~16:00) 매칭 후 별도 '체결' 알림 발송_"
         ),
-        color="#36a64f",
+        color="#3b82f6",  # 파란색 (정보성)
+    )
+
+
+def _get_account_summary() -> str:
+    """KIS 잔고에서 계좌 전체 평가 정보 추출 (보유 종목 합산 방식)."""
+    try:
+        from app.services.balance_service import get_all_overseas_balances
+        balance = get_all_overseas_balances()
+        if balance.get("rt_cd") != "0":
+            return ""
+        holdings = balance.get("output1") or []
+        if not holdings:
+            return ""
+        # 각 보유 종목의 외화 매입금액/평가손익을 합산
+        pchs_total = 0.0  # 외화 매입금액 합계 (USD)
+        pnl_total = 0.0   # 외화 평가손익 합계 (USD)
+        evlu_total = 0.0  # 외화 평가금액 합계 (USD)
+        for h in holdings:
+            try:
+                pchs_total += float(h.get("frcr_pchs_amt1", 0) or 0)
+                pnl_total += float(h.get("frcr_evlu_pfls_amt", 0) or 0)
+                evlu_total += float(h.get("ovrs_stck_evlu_amt", 0) or 0)
+            except (ValueError, TypeError):
+                continue
+        if pchs_total <= 0:
+            return ""
+        pnl_pct = (pnl_total / pchs_total) * 100
+        sign = "+" if pnl_total >= 0 else ""
+        return (
+            f"*💼 현재 계좌 (실거래)*\n"
+            f"  총 평가액:   ${evlu_total:,.2f}\n"
+            f"  매입 원금:   ${pchs_total:,.2f}\n"
+            f"  평가 손익:   {sign}${pnl_total:,.2f} ({sign}{pnl_pct:.2f}%)\n"
+        )
+    except Exception as e:
+        logger.warning(f"계좌 요약 조회 실패: {e}")
+        return ""
+
+
+def _get_today_trade_summary() -> str:
+    """오늘 매수/매도 거래 통계 (KST 기준)."""
+    try:
+        from app.db.supabase import supabase
+        from datetime import datetime
+        import pytz
+        now_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+        today_kst = now_kst.strftime("%Y-%m-%d")
+        # KST 자정 = 전날 UTC 15:00
+        utc_start = (now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
+                     .astimezone(pytz.UTC))
+        utc_start_str = utc_start.strftime("%Y-%m-%dT%H:%M:%S")
+
+        res = supabase.table("trade_records").select(
+            "id, ticker, status, buy_price, quantity, sell_price, profit_loss"
+        ).gte("created_at", utc_start_str).execute()
+        rows = res.data or []
+        buy_count = 0
+        buy_amount = 0.0
+        sell_count = 0
+        realized_pnl = 0.0
+        for r in rows:
+            if r.get("status") in ("buy_ordered", "holding"):
+                buy_count += 1
+                buy_amount += float(r.get("buy_price") or 0) * (r.get("quantity") or 0)
+            elif r.get("status") == "sold":
+                sell_count += 1
+                realized_pnl += float(r.get("profit_loss") or 0)
+        if buy_count == 0 and sell_count == 0:
+            return ""
+        sign = "+" if realized_pnl >= 0 else ""
+        return (
+            f"*📊 오늘 거래 요약 ({today_kst})*\n"
+            f"  매수: {buy_count}건 / ${buy_amount:,.2f}\n"
+            f"  매도: {sell_count}건 / 실현손익 {sign}${realized_pnl:,.2f}\n"
+        )
+    except Exception as e:
+        logger.warning(f"오늘 거래 요약 조회 실패: {e}")
+        return ""
+
+
+def _calc_holding_days(buy_date_str: Optional[str]) -> Optional[int]:
+    """매수일 기준 보유 일수 계산."""
+    if not buy_date_str:
+        return None
+    try:
+        from datetime import datetime
+        import pytz
+        # buy_date 는 NY 시간 'YYYY-MM-DD HH:MM:SS' 또는 ISO 형식
+        date_part = buy_date_str[:10]
+        buy_dt = datetime.strptime(date_part, "%Y-%m-%d")
+        now_ny = datetime.now(pytz.timezone('America/New_York')).replace(tzinfo=None)
+        days = (now_ny.date() - buy_dt.date()).days
+        return max(days, 0)
+    except Exception:
+        return None
+
+
+def notify_buy_filled(
+    ticker: str,
+    stock_name: str,
+    qty: int,
+    fill_price: float,
+    take_profit_price: Optional[float] = None,
+    stop_loss_price: Optional[float] = None,
+    composite_score: Optional[float] = None,
+):
+    """매수 실제 체결 확인 후 호출 (보유 현황표 + 계좌 요약 + 오늘 거래 통계 자동 첨부)."""
+    total_amount = qty * fill_price
+
+    parts = [
+        f"*이번 거래*",
+        f"  {qty}주 @ ${fill_price:.2f} = *${total_amount:,.2f}*",
+    ]
+    if composite_score is not None:
+        parts.append(f"  종합점수: {composite_score:.4f} (LLM BUY)")
+
+    # 자동 청산 라인
+    if take_profit_price and stop_loss_price and fill_price > 0:
+        tp_pct = (take_profit_price - fill_price) / fill_price * 100
+        sl_pct = (stop_loss_price - fill_price) / fill_price * 100
+        rr = tp_pct / abs(sl_pct) if sl_pct != 0 else 0
+        parts.append("")
+        parts.append(f"*🎯 자동 청산 라인 (ATR 기반)*")
+        parts.append(f"  익절가: ${take_profit_price:.2f} (+{tp_pct:.2f}%)  ← 도달 시 자동 매도")
+        parts.append(f"  손절가: ${stop_loss_price:.2f} ({sl_pct:.2f}%)  ← 도달 시 자동 손절")
+        parts.append(f"  보상/위험: {rr:.2f} : 1")
+
+    today_summary = _get_today_trade_summary()
+    if today_summary:
+        parts.append("")
+        parts.append(today_summary.rstrip())
+
+    account_summary = _get_account_summary()
+    if account_summary:
+        parts.append("")
+        parts.append(account_summary.rstrip())
+
+    holdings_table = format_holdings_table()
+    parts.append("")
+    parts.append(f"*📊 현재 보유 종목*")
+    parts.append(holdings_table)
+
+    _send(
+        title=f"✅ 매수 체결: {stock_name} ({ticker})",
+        message="\n".join(parts),
+        color="#36a64f",  # 초록 (성공)
     )
 
 
 # ──────────────────────────────────────────────────────────
-# ④ 매도 체결
+# ④ 매도 (주문 접수 + 체결 확인 — 2단계)
 # ──────────────────────────────────────────────────────────
 
-def notify_sell_executed(
+def notify_sell_ordered(
     ticker: str,
     stock_name: str,
     qty: int,
     price: float,
     sell_reason: str,
+):
+    """매도 주문 접수 직후 호출 (실 체결 X, KIS에 주문 전송 성공만 의미)."""
+    _send(
+        title=f"📋 매도 주문 접수: {stock_name} ({ticker})",
+        message=(
+            f"*수량:* {qty}주  *주문가(지정가):* ${price:.2f}  *사유:* `{sell_reason}`\n"
+            f"_⏳ 거래소 체결은 정규 시간(NY 09:30~16:00) 매칭 후 별도 '체결' 알림 발송_"
+        ),
+        color="#3b82f6",  # 파란색 (정보성)
+    )
+
+
+def notify_sell_filled(
+    ticker: str,
+    stock_name: str,
+    qty: int,
+    fill_price: float,
+    sell_reason: str,
     profit_loss: float,
     profit_loss_pct: float,
+    buy_price: Optional[float] = None,
+    buy_date: Optional[str] = None,
 ):
-    """매도 주문 성공 직후 호출. 보유 현황표 자동 첨부."""
+    """매도 실제 체결 확인 후 호출 (이번 거래 + 오늘 통계 + 계좌 요약 + 보유 현황표)."""
     is_profit = profit_loss >= 0
     icon = "💰" if is_profit else "🩸"
     color = "#2eb886" if is_profit else "#ff9800"
     sign = "+" if is_profit else ""
 
+    # 매도 사유 한글 매핑
+    reason_kr = {
+        "take_profit": "익절 (목표가 도달)",
+        "stop_loss": "손절 (손실 한도 도달)",
+        "signal": "기술 신호 매도",
+        "panic_sell": "패닉셀 (당일 급락+거래량 폭증)",
+    }.get(sell_reason, sell_reason)
+
+    parts = [
+        f"*이번 거래*",
+        f"  {qty}주 @ ${fill_price:.2f}",
+    ]
+    if buy_price and buy_price > 0:
+        parts.append(f"  매수가 ${buy_price:.2f} → 매도가 ${fill_price:.2f}")
+    parts.append(f"  손익: *{sign}${profit_loss:,.2f}* ({sign}{profit_loss_pct:.2f}%)")
+    parts.append(f"  사유: `{reason_kr}`")
+    holding_days = _calc_holding_days(buy_date)
+    if holding_days is not None:
+        parts.append(f"  보유 기간: {holding_days}일")
+
+    today_summary = _get_today_trade_summary()
+    if today_summary:
+        parts.append("")
+        parts.append(today_summary.rstrip())
+
+    account_summary = _get_account_summary()
+    if account_summary:
+        parts.append("")
+        parts.append(account_summary.rstrip())
+
     holdings_table = format_holdings_table()
+    parts.append("")
+    parts.append(f"*📊 매도 후 보유 종목*")
+    parts.append(holdings_table)
+
     _send(
-        title=f"{icon} 매도 체결: {stock_name} ({ticker})",
-        message=(
-            f"*수량:* {qty}주  *체결가:* ${price:.2f}\n"
-            f"*손익:* {sign}${profit_loss:,.2f}  "
-            f"({sign}{profit_loss_pct:.2f}%)  *사유:* `{sell_reason}`\n\n"
-            f"*📊 매도 후 현재 보유 종목 + 수익률*\n{holdings_table}"
-        ),
+        title=f"{icon} 매도 체결: {stock_name} ({ticker})  {sign}${profit_loss:,.2f} ({sign}{profit_loss_pct:.2f}%)",
+        message="\n".join(parts),
         color=color,
     )
+
+
+# ──────────────────────────────────────────────────────────
+# 하위 호환 alias (legacy 코드가 있을 경우 대비)
+# ──────────────────────────────────────────────────────────
+notify_buy_executed = notify_buy_ordered
+notify_sell_executed = notify_sell_ordered
 
 
 # ──────────────────────────────────────────────────────────
