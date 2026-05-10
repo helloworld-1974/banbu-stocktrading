@@ -550,10 +550,16 @@ class StockScheduler:
             holdings = balance_result.get("output1", [])
             holding_tickers = set()
             
+            # ★ 패치: 보유 종목 평가금액 합산 (총자산 기준 슬롯 계산용)
+            initial_holdings_value = 0.0
             for item in holdings:
                 ticker = item.get("ovrs_pdno")
                 if ticker:
                     holding_tickers.add(ticker)
+                try:
+                    initial_holdings_value += float(item.get("ovrs_stck_evlu_amt", 0) or 0)
+                except (ValueError, TypeError):
+                    pass
             
             # buy_ordered/holding 상태인 종목도 중복 매수 방지 (DB 이중 체크) — 현재 계좌 모드만
             try:
@@ -662,7 +668,7 @@ class StockScheduler:
                 current_price = round(current_price, 2 if current_price >= 1.0 else 4)
 
                 await asyncio.sleep(2)  # KIS API 초당 제한 방지
-                # 매수가능금액 조회 → 종목당 10% 투자
+                # 매수가능금액 조회 → ★ 총자산 기준 종목당 10% 투자
                 try:
                     ps_params = {
                         "CANO": settings.KIS_CANO,
@@ -684,15 +690,30 @@ class StockScheduler:
                         logger.info(f"{stock_name}({ticker}) 매수가능금액이 없습니다.")
                         continue
 
-                    # 종목당 투자금 = 가용 금액의 10%
-                    invest_amount = available_amount * 0.10
+                    # ★ 패치: 총자산(현금 + 보유 평가) 기준 종목당 10% 슬롯 크기 (모든 종목 동일)
+                    # 이전: available_amount * 0.10 → 종목 살 때마다 가용현금이 줄어 다음 종목 슬롯이 작아지는 문제
+                    # 현재: 총자산 기준 고정 슬롯 → 모든 종목에 동일한 비중 투자
+                    total_assets = available_amount + initial_holdings_value
+                    invest_amount = total_assets * 0.10
+
+                    # 가용 현금이 슬롯보다 적으면 가용 현금 한도로 조정
+                    if invest_amount > available_amount:
+                        logger.warning(
+                            f"{stock_name}({ticker}) 가용현금 부족: 슬롯 ${invest_amount:.2f} > 현금 ${available_amount:.2f} → 가용현금 한도로 조정"
+                        )
+                        invest_amount = available_amount
+
                     quantity = int(invest_amount / current_price)
 
                     if quantity < 1:
                         logger.info(f"{stock_name}({ticker}) 투자금(${invest_amount:.2f})으로 1주도 살 수 없습니다. (현재가 ${current_price})")
                         continue
 
-                    logger.info(f"{stock_name}({ticker}) 매수가능금액: ${available_amount:.2f}, 투자금(10%): ${invest_amount:.2f}, 수량: {quantity}주")
+                    logger.info(
+                        f"{stock_name}({ticker}) 총자산: ${total_assets:,.2f} "
+                        f"(현금 ${available_amount:,.2f} + 보유평가 ${initial_holdings_value:,.2f}), "
+                        f"종목당 슬롯(10%): ${invest_amount:,.2f}, 수량: {quantity}주"
+                    )
                 except Exception as ps_e:
                     logger.error(f"{stock_name}({ticker}) 매수가능금액 조회 오류: {ps_e}")
                     continue
