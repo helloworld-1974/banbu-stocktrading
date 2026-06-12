@@ -181,7 +181,7 @@ def notify_llm_decisions(
             f"• *{c.get('stock_name')}* ({c.get('ticker')}) "
             f"score={c.get('composite_score', 0):.3f} "
             f"rise={c.get('rise_probability', 0):.2f}% "
-            f"— _{c.get('llm_reason', '')[:80]}_"
+            f"— _{c.get('llm_reason', '')}_"
         )
 
     # 홀드 종목 라인
@@ -190,7 +190,7 @@ def notify_llm_decisions(
         hold_lines.append(
             f"• {c.get('stock_name')} ({c.get('ticker')}) "
             f"score={c.get('composite_score', 0):.3f} "
-            f"— _{c.get('llm_reason', '')[:80]}_"
+            f"— _{c.get('llm_reason', '')}_"
         )
 
     body_parts = []
@@ -347,6 +347,7 @@ def notify_buy_filled(
 
     # 자동 청산 라인
     if take_profit_price and stop_loss_price and fill_price > 0:
+        # (구) 고정 익절/손절 방식 — 잔존 데이터 호환용
         tp_pct = (take_profit_price - fill_price) / fill_price * 100
         sl_pct = (stop_loss_price - fill_price) / fill_price * 100
         rr = tp_pct / abs(sl_pct) if sl_pct != 0 else 0
@@ -355,6 +356,13 @@ def notify_buy_filled(
         parts.append(f"  익절가: ${take_profit_price:.2f} (+{tp_pct:.2f}%)  ← 도달 시 자동 매도")
         parts.append(f"  손절가: ${stop_loss_price:.2f} ({sl_pct:.2f}%)  ← 도달 시 자동 손절")
         parts.append(f"  보상/위험: {rr:.2f} : 1")
+    elif stop_loss_price and fill_price > 0:
+        # 트레일링 스톱 방식 (고정 익절 없음) — 고점 추적 손절
+        sl_pct = (stop_loss_price - fill_price) / fill_price * 100
+        parts.append("")
+        parts.append(f"*🎯 자동 청산 (ATR 트레일링 스톱)*")
+        parts.append(f"  초기 손절가: ${stop_loss_price:.2f} ({sl_pct:.2f}%)")
+        parts.append(f"  ↳ 고점이 오를 때마다 손절선도 따라 상향, 익절 상한 없음 (승자 추세 추종)")
 
     today_summary = _get_today_trade_summary()
     if today_summary:
@@ -419,6 +427,7 @@ def notify_sell_filled(
 
     # 매도 사유 한글 매핑
     reason_kr = {
+        "trailing_stop": "트레일링 스톱 청산 (고점 대비 ATR×3 하락)",
         "take_profit": "익절 (목표가 도달)",
         "stop_loss": "손절 (손실 한도 도달)",
         "signal": "기술 신호 매도",
