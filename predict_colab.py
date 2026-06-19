@@ -45,8 +45,8 @@ def check_environment():
 # ============================================================
 # Supabase 연결
 # ============================================================
-SUPABASE_URL = ""
-SUPABASE_KEY = ""
+SUPABASE_URL=https://sloitlaqrwzadjcjabdp.supabase.co
+SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsb2l0bGFxcnd6YWRqY2phYmRwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4MTA1NTEsImV4cCI6MjA5NzM4NjU1MX0.AVXZG9f4JJiRwOQbipIOulC7Cqv8QpaK5012ZgaXK7E
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 

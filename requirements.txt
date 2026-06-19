@@ -20,3 +20,5 @@ matplotlib>=3.7.0
 joblib>=1.3.0
 anthropic>=0.30.0
 kaggle>=1.6.0
+# app_kor (한국주식) 멀티소스 데이터용 (선택 — KOR_DATA_SOURCE_PRIORITY 에 pykrx 포함 시 필요)
+pykrx>=1.0.0
